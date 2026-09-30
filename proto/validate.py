@@ -147,15 +147,27 @@ def _unit(c):
 
 
 def _two_means(f, n_iter: int = 20):
-    """Split rows of f into two clusters by spherical k-means."""
-    s = f @ f.T
-    # seed with the two least-similar non-blank members
-    ok = np.linalg.norm(f, axis=1) > 0
-    idx = np.flatnonzero(ok)
-    i, j = np.unravel_index(np.argmin(s[np.ix_(idx, idx)]), (idx.size,) * 2)
-    c = f[[idx[i], idx[j]]]
+    """Split rows of f into two clusters by spherical k-means.
+
+    Seeded by the sign of each row's projection on the principal direction
+    (Boley 1998, principal direction divisive partitioning): a printed
+    difference between versions is one consistent direction, while
+    handwriting spreads over many.
+    """
+    x = f - f.mean(0)
+    v = x[np.argmax((x ** 2).sum(1))]
+    for _ in range(25):
+        v = x.T @ (x @ v)
+        v /= np.linalg.norm(v) + 1e-12
+    lab = (x @ v > 0).astype(int)
+    if lab.min() == lab.max():
+        return lab, _unit(np.array([f.mean(0), f.mean(0)]))
+    c = _unit(np.array([f[lab == k].mean(0) for k in range(2)]))
     for _ in range(n_iter):
-        lab = (f @ c.T).argmax(1)
+        new = (f @ c.T).argmax(1)
+        if new.min() == new.max():
+            break
+        lab = new
         c = _unit(np.array([f[lab == k].mean(0) for k in range(2)]))
     return lab, c
 

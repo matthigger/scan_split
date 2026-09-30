@@ -157,9 +157,22 @@ export function lagSim(S, n, maxLag = 12) {
   return out;
 }
 
-/** Decide duplex: pages 2 apart match far better than neighbours. */
-export function isDuplex(lag) {
-  return lag[1] > 3 * Math.max(lag[0], 0.02);
+/**
+ * Decide whether each sheet's back was scanned too (pages pair up).
+ *
+ * Either blank pages sit on one parity of each file's pages (blank backs),
+ * or pages 2 apart match far better than neighbours (every front alike).
+ *
+ * @param {number[]} lag from lagSim
+ * @param {boolean[]} blank (N,) per page
+ * @param {number[]} pos (N,) each page's index within its file
+ */
+export function isDuplex(lag, blank, pos) {
+  const n = [0, 0];
+  const b = [0, 0];
+  pos.forEach((p, i) => { n[p % 2]++; b[p % 2] += blank[i]; });
+  const gap = n[0] && n[1] ? Math.abs(b[0] / n[0] - b[1] / n[1]) : 0;
+  return gap > 0.3 || lag[1] > 3 * Math.max(lag[0], 0.02);
 }
 
 /**
@@ -245,32 +258,62 @@ function unit(c) {
 }
 
 /** Average features into a unit-norm consensus vector. */
-function consensus(vs) {
+export function consensus(vs) {
   const c = new Float32Array(vs[0].length);
   for (const v of vs) for (let i = 0; i < c.length; i++) c[i] += v[i];
   return unit(c);
 }
 
-/** Split pages into two clusters by spherical k-means. */
+/**
+ * Split pages into two clusters by spherical k-means.
+ *
+ * Seeded by the sign of each page's projection on the members' principal
+ * direction (Boley 1998, principal direction divisive partitioning): a
+ * printed difference between versions is one consistent direction, while
+ * handwriting spreads over many, so the seed follows printed content.
+ */
 function twoMeans(F, idx, S, n, nIter = 20) {
-  let lo = Infinity;
-  let seed = [0, 1];
-  for (let a = 0; a < idx.length; a++) {
-    for (let b = a + 1; b < idx.length; b++) {
-      const s = S[idx[a] * n + idx[b]];
-      if (s < lo) { lo = s; seed = [a, b]; }
-    }
+  const m = idx.length;
+  const d = F[idx[0]].length;
+  const mean = new Float32Array(d);
+  for (const p of idx) for (let i = 0; i < d; i++) mean[i] += F[p][i] / m;
+  // power iteration for the top principal direction, from the member
+  // farthest from the mean
+  let far = idx[0];
+  let farD = -Infinity;
+  for (const p of idx) {
+    let q = 0;
+    for (let i = 0; i < d; i++) q += (F[p][i] - mean[i]) ** 2;
+    if (q > farD) { farD = q; far = p; }
   }
-  let c = seed.map((a) => F[idx[a]]);
-  const sub = new Int32Array(idx.length);
+  let v = F[far].map((x, i) => x - mean[i]);
+  const proj = new Float32Array(m);
+  for (let it = 0; it < 25; it++) {
+    const mv = dot(mean, v);
+    idx.forEach((p, a) => { proj[a] = dot(F[p], v) - mv; });
+    const w = new Float32Array(d);
+    idx.forEach((p, a) => {
+      const f = F[p];
+      for (let i = 0; i < d; i++) w[i] += proj[a] * (f[i] - mean[i]);
+    });
+    const nrm = Math.sqrt(dot(w, w)) + 1e-12;
+    v = w.map((x) => x / nrm);
+  }
+  const mv = dot(mean, v);
+  const sub = new Int32Array(m);
+  idx.forEach((p, a) => { sub[a] = dot(F[p], v) - mv > 0 ? 1 : 0; });
+  const g = [[], []];
+  idx.forEach((p, a) => g[sub[a]].push(F[p]));
+  if (!g[0].length || !g[1].length) return { sub, c: [consensus(idx.map((p) => F[p])), mean] };
+  let c = g.map(consensus);
   for (let it = 0; it < nIter; it++) {
-    for (let a = 0; a < idx.length; a++) {
+    for (let a = 0; a < m; a++) {
       sub[a] = dot(F[idx[a]], c[1]) > dot(F[idx[a]], c[0]) ? 1 : 0;
     }
-    const g = [[], []];
-    idx.forEach((p, a) => g[sub[a]].push(F[p]));
-    if (!g[0].length || !g[1].length) break;
-    c = g.map(consensus);
+    const h = [[], []];
+    idx.forEach((p, a) => h[sub[a]].push(F[p]));
+    if (!h[0].length || !h[1].length) break;
+    c = h.map(consensus);
   }
   return { sub, c };
 }

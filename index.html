@@ -24,8 +24,23 @@
         </label></p>
       <p class="hint">Files are stacked in name order. Page layout, page count
         and headers are learned from the scans; nothing needs to be set up.</p>
+      <p class="hint">New here? Try a fictional quiz stack (24 made-up students):
+        <button class="btn small" id="demo-tpl">load example</button>
+        <button class="btn ghost small" id="demo-scans">example without templates</button></p>
     </div>
     <ul id="files"></ul>
+    <div id="tpl-drop" class="tpl-row">
+      <div><strong>Page templates</strong> <span class="hint">(optional) blank PDFs of the
+        exam pages, e.g. one per question. Each sheet is sorted to its closest
+        template, and the template's file name names its output.</span></div>
+      <div class="tpl-actions">
+        <label class="btn ghost small">add templates
+          <input type="file" id="tpl-file" accept="application/pdf,.pdf" multiple hidden></label>
+        <button class="btn ghost small" id="tpl-clear" hidden>remove all</button>
+      </div>
+    </div>
+    <ul id="tpls"></ul>
+    <p class="clear-row"><button class="btn ghost small" id="clear-all" hidden>start over</button></p>
     <div id="progress" hidden>
       <div class="bar"><span></span></div>
       <p class="hint" id="progress-text"></p>
@@ -35,28 +50,30 @@
   <section id="summary" class="card" hidden></section>
 
   <section id="types" hidden>
-    <div class="h-row"><h2>1 &middot; Page types</h2>
+    <div class="h-row"><h2>Page types</h2>
       <button class="btn ghost small" id="reset-types">reset to automatic</button></div>
-    <p class="hint">Each card is the average of every sheet of that type
+    <p class="hint" id="types-hint">Each card is the average of every sheet of that type
       (handwriting fades out, the printed page remains); the magnifier shows it
       large. A type's name is its output file. Split a type that hides two
       versions, merge to undo; names and routing are kept either way. Backs
       always travel with their front.</p>
+    <p class="hint" id="types-unused" hidden></p>
     <div id="type-cards" class="type-grid"></div>
   </section>
 
+
+  <section id="export" hidden>
+    <h2>Download</h2>
+    <div id="outputs"></div>
+  </section>
+
   <section id="review" hidden>
-    <h2>2 &middot; Review sheets</h2>
+    <h2>Review</h2>
     <p class="hint">Click to select (shift-click for a range), then re-route
       the selection. Double-click or &#10530; to inspect a sheet.</p>
     <div id="filters" class="chips"></div>
     <div id="bulk" class="bulk" hidden></div>
     <div id="grid" class="grid"></div>
-  </section>
-
-  <section id="export" hidden>
-    <h2>3 &middot; Export</h2>
-    <div id="outputs"></div>
   </section>
 </main>
 
@@ -66,8 +83,14 @@
     <button class="icon" value="close" aria-label="Close">&times;</button>
   </form>
   <div class="in-body">
-    <figure class="in-main"><canvas id="in-cons"></canvas>
-      <figcaption>average of up to 10 sheets &middot; hover to magnify</figcaption></figure>
+    <figure class="in-main">
+      <div class="in-nav">
+        <button class="btn ghost small" id="in-prev" aria-label="previous">&larr;</button>
+        <span id="in-pos">average</span>
+        <button class="btn ghost small" id="in-next" aria-label="next">&rarr;</button>
+      </div>
+      <canvas id="in-cons"></canvas>
+      <figcaption id="in-cap"></figcaption></figure>
     <div class="in-side">
       <div id="in-split-box">
         <h3>If split</h3>
@@ -79,6 +102,10 @@
         <button class="btn" id="in-split">split into these two</button>
       </div>
       <button class="btn ghost" id="in-merge"></button>
+      <div id="in-tpl-box" hidden>
+        <h3>Template</h3>
+        <figure><canvas id="in-tpl"></canvas><figcaption>the uploaded blank page</figcaption></figure>
+      </div>
     </div>
   </div>
 </dialog>

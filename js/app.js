@@ -1,11 +1,12 @@
 /**
  * scan_split UI: load scanned PDFs, match pages, route sheets, export.
  *
- * Flow: render every page small (pdf.js) -> features and a type tree
- * (pipeline.js) -> page types are a cut through the tree, which the user
- * moves by splitting or merging types -> types, and single sheets, are
- * routed to named outputs or discarded -> export copies the original pages
- * (pdf-lib), so scan quality is untouched.
+ * Flow: render every page small (pdf.js) -> features (pipeline.js) -> page
+ * types, either a cut through a type tree learned from the scans (the user
+ * moves it by splitting or merging) or, when page templates are loaded, one
+ * type per template plus any groups no template matches -> types, and
+ * single sheets, are routed to named outputs or discarded -> export copies
+ * the original pages (pdf-lib), so scan quality is untouched.
  *
  * A sheet is {front, back} page indices; back is null when the stack has
  * no scanned backs (the pairing setting, labelled "blank backs scanned").
@@ -30,6 +31,16 @@ const BLANK = -1;
 const DISCARD = 'discard';
 const LOW_MARGIN = 0.1;
 const AUTO_SPLIT = 0.8;
+// a group of sheets does not match its template when its average scores
+// below MATCH_LO, or MATCH_GAP below the template's best group (real and
+// example scans: true template 0.73+, other version of the question up to
+// 0.64, other questions up to 0.52)
+const MATCH_LO = 0.65;
+const MATCH_GAP = 0.12;
+// smaller groups are not judged: their average still carries handwriting
+const MIN_JUDGE = 5;
+const TPL_BASE = 100000;
+const STRAY_BASE = 200000;
 const MAG = `<svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
   <circle cx="10" cy="10" r="6.5" fill="none" stroke="currentColor" stroke-width="2.2"/>
   <path d="M15 15l5.5 5.5M10 7v6M7 10h6" stroke="currentColor" stroke-width="2.2"
@@ -46,8 +57,10 @@ const state = {
   pages: [],
   // {front, back, type, margin, flipped, dest}; dest null = type default
   sheets: [],
-  // P.TypeTree over non-blank sheet fronts, or null
+  // P.TypeTree over non-blank sheet fronts, or null (also with templates)
   tree: null,
+  // {name, file, idx, v, thumb}: blank page templates to sort against
+  templates: [],
   // tree nodes currently shown as page types, in display order
   cut: [],
   // node id -> {id, label, color, out, dest}; out is the node's own output,
@@ -161,7 +174,7 @@ function analyze() {
   pages.forEach((p, i) => { p.blank = blank[i]; });
   state.S = P.simMatrix(pages.map((p) => (p.blank ? null : p.v)));
   state.lag = P.lagSim(state.S, pages.length);
-  state.duplexAuto = P.isDuplex(state.lag);
+  state.duplexAuto = P.isDuplex(state.lag, pages.map((p) => p.blank), pages.map((p) => p.idx));
   state.typ = P.typicality(state.S, pages.length);
   cluster();
 }
@@ -177,8 +190,9 @@ function buildSheets() {
       for (let i = 0; i < f.nPages; i += 2) {
         const a = f.start + i;
         const b = i + 1 < f.nPages ? a + 1 : null;
-        // the front is the side with near-copies elsewhere in the stack
-        const flip = b !== null && state.typ[b] > state.typ[a];
+        // the front is the side that best matches a template or, without
+        // templates, the side with near-copies elsewhere in the stack
+        const flip = b !== null && frontScore(b) > frontScore(a);
         sheets.push({ front: flip ? b : a, back: flip ? a : b, flipped: flip });
       }
     }
@@ -188,12 +202,18 @@ function buildSheets() {
   state.sheets = sheets.map((s) => ({ ...s, type: BLANK, margin: 1, dest: null }));
 }
 
-/** Pair sheets, build the type tree and apply the automatic cut. */
+function frontScore(i) {
+  const p = state.pages[i];
+  if (!state.templates.length) return state.typ[i];
+  return p.blank ? 0 : Math.max(...state.templates.map((t) => P.dot(p.v, t.v)));
+}
+
+/** Pair sheets and find page types, from templates or a learned tree. */
 function cluster() {
   buildSheets();
   const pages = state.pages;
   const idx = state.sheets.filter((s) => !pages[s.front].blank).map((s) => s.front);
-  state.tree = idx.length
+  state.tree = idx.length && !state.templates.length
     ? new P.TypeTree(pages.map((p) => p.v), idx, state.S, pages.length) : null;
   state.meta.clear();
   state.outputs = [];
@@ -201,7 +221,90 @@ function cluster() {
   state.hiCache.clear();
   state.selected.clear();
   state.filter = 'all';
-  autoCut();
+  if (state.templates.length) templateCut(idx); else autoCut();
+}
+
+/** Return the index of the candidate feature closest to v, shift-tolerant. */
+function nearest(v, cands) {
+  const top = cands.map((c, i) => [P.dot(v, c), i]).sort((a, b) => b[0] - a[0]).slice(0, 3);
+  let best = -Infinity;
+  let k = 0;
+  for (const [, i] of top) {
+    const sc = P.shiftDot(v, cands[i]);
+    if (sc > best) { best = sc; k = i; }
+  }
+  return k;
+}
+
+/**
+ * Sort sheet fronts to templates, setting aside groups no template matches.
+ *
+ * Each front goes to its nearest template. A tree over each template's
+ * fronts is walked down its genuine splits (halves that differ in printed
+ * content, as in autoCut); a resulting group big enough to judge is set
+ * aside when its average matches the template poorly, or clearly worse than
+ * the template's best group (another version of the same question). The
+ * set-aside fronts are pooled and grouped by their own learned tree.
+ *
+ * @param {number[]} idx page indices of non-blank sheet fronts
+ */
+function templateCut(idx) {
+  const pages = state.pages;
+  const F = pages.map((p) => p.v);
+  const T = state.templates;
+  const groups = T.map(() => []);
+  for (const p of idx) groups[nearest(F[p], T.map((t) => t.v))].push(p);
+  const aside = new Set();
+  // per template, the groups judged and their scores (for inspection)
+  state.tplLeaves = [];
+  groups.forEach((mem, k) => {
+    if (!mem.length) return;
+    const tree = new P.TypeTree(F, mem, state.S, pages.length);
+    const leaves = [];
+    const walk = (node) => {
+      const kids = node.members.length >= 2 * MIN_JUDGE ? tree.children(node) : null;
+      const real = kids && node.score < AUTO_SPLIT &&
+        Math.min(kids[0].members.length, kids[1].members.length) >= MIN_JUDGE;
+      if (real) kids.forEach(walk); else leaves.push(node);
+    };
+    walk(tree.root);
+    const sc = leaves.map((n) => P.shiftDot(n.cons, T[k].v));
+    const best = Math.max(...sc);
+    state.tplLeaves.push(...leaves.map((n, j) => ({ template: T[k].name, n: n.members.length, score: sc[j] })));
+    leaves.forEach((n, j) => {
+      if (n.members.length >= MIN_JUDGE && (sc[j] < MATCH_LO || sc[j] < best - MATCH_GAP)) {
+        n.members.forEach((p) => aside.add(p));
+      }
+    });
+  });
+  const tplNodes = T.map((t, k) => ({
+    id: TPL_BASE + k, members: groups[k].filter((p) => !aside.has(p)), cons: t.v, template: t,
+  }));
+  let strayNodes = [];
+  if (aside.size) {
+    const tree = new P.TypeTree(F, [...aside], state.S, pages.length);
+    strayNodes = tree.autoCut(AUTO_SPLIT).map((n, j) => ({
+      id: STRAY_BASE + j, members: n.members, cons: n.cons }));
+  }
+  const cut = [...tplNodes, ...strayNodes];
+  for (const n of cut) {
+    n.parent = null;
+    n.children = null;
+    n.first = n.members.length ? Math.min(...n.members) : Infinity;
+  }
+  let k = 0;
+  for (const n of cut) {
+    if (n.template) {
+      // templates nothing matched get no letter; their cards are hidden
+      const label = n.members.length ? letter(k++) : '';
+      newMeta(n, label, COLORS[(k + COLORS.length - 1) % COLORS.length], n.template.name);
+    } else {
+      const j = n.id - STRAY_BASE + 1;
+      newMeta(n, `?${j}`, '#8d8d94', `no_template_${j}`);
+    }
+  }
+  state.cut = cut;
+  assign();
 }
 
 /** Show the tree's automatic cut; keeps names and per-sheet routing. */
@@ -246,7 +349,7 @@ function assign() {
     }
   }
   state.types = state.cut.map((node) => Object.assign(state.meta.get(node.id), {
-    node, n: node.members.length, img: nodeImage(node),
+    node, n: node.members.length, img: node.template ? node.template.thumb : nodeImage(node),
   }));
   if (state.sheets.some((s) => s.type === BLANK)) {
     state.types.push(Object.assign(state.blankMeta, {
@@ -414,6 +517,7 @@ function renderTypesAndBelow() {
 function renderFiles() {
   $('#files').innerHTML = state.files.map((f) =>
     `<li>${esc(f.name)} · ${f.nPages} p</li>`).join('');
+  $('#clear-all').hidden = !state.files.length;
 }
 
 function renderSummary() {
@@ -438,7 +542,7 @@ function renderSummary() {
 
 function renderSummaryStats() {
   const sh = state.sheets;
-  const nTypes = state.types.filter((t) => t.id !== BLANK).length;
+  const nTypes = state.types.filter((t) => t.id !== BLANK && t.n).length;
   const per = state.period;
   const label = (id) => state.types.find((t) => t.id === id)?.label ?? '?';
   let exam = '—';
@@ -456,20 +560,37 @@ function renderSummaryStats() {
     ${stat('blank backs scanned', isDuplex() ? 'yes' : 'no')}
     ${stat('blank pages', state.pages.filter((p) => p.blank).length)}
     ${stat('page types', nTypes)}
+    ${stat('sorted by', state.templates.length ? `${state.templates.length} templates` : 'learned from scans')}
     ${stat('one exam', exam)}
     ${stat('flagged', sh.filter(flagged).length)}`;
 }
 
 function renderTypes() {
-  $('#type-cards').innerHTML = state.types.map((t) => {
+  $('#reset-types').hidden = !state.tree;
+  $('#types-hint').textContent = state.templates.length
+    ? 'One card per uploaded template, plus any group of sheets no template ' +
+      'matches (?1, ?2, …). A type\'s name is its output file; the magnifier ' +
+      'shows the matched sheets\' average next to the template. Backs always ' +
+      'travel with their front.'
+    : 'Each card is the average of every sheet of that type (handwriting fades ' +
+      'out, the printed page remains); the magnifier shows it large. A type\'s ' +
+      'name is its output file. Split a type that hides two versions, merge to ' +
+      'undo; names and routing are kept either way. Backs always travel with ' +
+      'their front.';
+  const unused = state.types.filter((t) => !t.n && t.node && t.node.template);
+  $('#types-unused').hidden = !unused.length;
+  $('#types-unused').textContent = unused.length
+    ? `No sheets matched ${unused.length} template${unused.length === 1 ? '' : 's'}: ` +
+      unused.map((t) => t.node.template.name).join(', ') + '.' : '';
+  $('#type-cards').innerHTML = state.types.filter((t) => !unused.includes(t)).map((t) => {
     const n = t.node;
     const kids = n && n.children;
-    const partners = n ? mergePartners(t.id) : [];
+    const partners = n && state.tree ? mergePartners(t.id) : [];
     const splitTip = kids
       ? `Split into ${kids[0].members.length} + ${kids[1].members.length} sheets; their averages correlate ${n.score.toFixed(2)} (near 1: same printed page, only handwriting differs)`
       : 'Cannot split: one sheet, or identical sheets';
     const mergeTip = partners.length ? `Merge with ${partners.join(', ')}` : 'Nothing to merge with';
-    const tree = n ? `<div class="tree-actions">
+    const tree = n && state.tree ? `<div class="tree-actions">
         <button class="btn ghost small" data-split="${t.id}" title="${esc(splitTip)}"${kids ? '' : ' disabled'}>split${kids ? ` <span class="score">${kids[0].members.length}+${kids[1].members.length}</span>` : ''}</button>
         <button class="btn ghost small" data-merge="${t.id}" title="${esc(mergeTip)}"${partners.length ? '' : ' disabled'}>merge${partners.length ? ` with ${esc(partners.join(', '))}` : ''}</button>
       </div>` : '';
@@ -543,7 +664,7 @@ function renderReview() {
   const sh = state.sheets;
   const chips = [['all', `all ${sh.length}`], ['flagged', `flagged ${sh.filter(flagged).length}`],
     ['back', `work on back ${sh.filter(workOnBack).length}`],
-    ...state.types.map((t) => [`t${t.id}`, `${t.label} ${t.n}`]),
+    ...state.types.filter((t) => t.n).map((t) => [`t${t.id}`, `${t.label} ${t.n}`]),
     ['discard', `discarded ${sh.filter((s) => destOf(s) === DISCARD).length}`]];
   $('#filters').innerHTML = chips.map(([k, l]) =>
     `<button class="chip${state.filter === k ? ' on' : ''}" data-f="${k}">${esc(l)}</button>`).join('');
@@ -682,11 +803,12 @@ async function openPreview(i) {
   if (s.back !== null) await drawLarge(s.back, $('#pv-back'));
 }
 
-async function drawLarge(pi, canvas) {
-  const p = state.pages[pi];
+/** Render a page (index into state.pages, or any {file, idx}) large. */
+async function drawLarge(pi, canvas, width = 1000) {
+  const p = typeof pi === 'number' ? state.pages[pi] : pi;
   const page = await p.file.doc.getPage(p.idx + 1);
   const vp1 = page.getViewport({ scale: 1 });
-  const vp = page.getViewport({ scale: 1000 / vp1.width });
+  const vp = page.getViewport({ scale: width / vp1.width });
   canvas.width = vp.width;
   canvas.height = vp.height;
   await page.render({ canvasContext: canvas.getContext('2d'), viewport: vp }).promise;
@@ -718,9 +840,11 @@ async function openInspector(id) {
   const n = t.node;
   $('#in-title').innerHTML = `<span class="tag" style="--c:${t.color}">${esc(t.label)}</span>
     ${t.n} sheet${t.n === 1 ? '' : 's'} · &rarr; ${esc(outputName(t.dest))}`;
-  const kids = n && n.children;
+  const kids = n && state.tree && n.children;
   $('#in-split-box').hidden = !kids;
-  const partners = n ? mergePartners(id) : [];
+  $('#in-tpl-box').hidden = !(n && n.template);
+  if (n && n.template) drawLarge(n.template, $('#in-tpl'), HI_W);
+  const partners = n && state.tree ? mergePartners(id) : [];
   $('#in-merge').hidden = !partners.length;
   $('#in-merge').textContent = `merge with ${partners.join(', ')}`;
   $('#in-merge').onclick = () => { dlg.close(); mergeType(id); };
@@ -732,22 +856,73 @@ async function openInspector(id) {
     $('#in-k1-cap').textContent = `${kids[1].members.length} sheets`;
     $('#in-split').onclick = () => { dlg.close(); splitType(id); };
   }
-  const fronts = state.sheets.filter((s) => s.type === id).map((s) => s.front);
-  const canvases = [[$('#in-cons'), n, fronts]];
-  if (kids) canvases.push([$('#in-k0'), kids[0]], [$('#in-k1'), kids[1]]);
-  for (const [cv, nd, members] of canvases) placeholder(cv, nd ? nodeImage(nd) : t.img);
-  for (const [cv, nd, members] of canvases) {
-    const hi = await hiConsensus(nd ? nd.id : 'blank', members ?? nd.members, nd && nd.cons);
+  inView = { t, node: n, fronts: state.sheets.filter((s) => s.type === id).map((s) => s.front) };
+  showInspectPos(0);
+  const previews = kids ? [[$('#in-k0'), kids[0]], [$('#in-k1'), kids[1]]] : [];
+  for (const [cv, nd] of previews) placeholder(cv, nodeImage(nd), () => token === inspectToken);
+  for (const [cv, nd] of previews) {
+    const hi = await hiConsensus(nd.id, nd.members, nd.cons);
     if (token !== inspectToken) return;
-    cv.width = hi.width;
-    cv.height = hi.height;
-    cv.getContext('2d').drawImage(hi, 0, 0);
+    copyTo(cv, hi);
   }
 }
 
-function placeholder(canvas, url) {
+// the inspector's main view: {t, node, fronts, pos}; pos 0 is the average,
+// pos i the i-th sheet of the type
+let inView = null;
+let mainToken = 0;
+
+/** Show the type's average (pos 0) or one of its sheets, full resolution. */
+async function showInspectPos(pos) {
+  const { t, node: n, fronts } = inView;
+  const token = ++mainToken;
+  const cv = $('#in-cons');
+  inView.pos = pos;
+  $('#in-pos').textContent = pos ? `sheet ${pos} of ${fronts.length}` : 'average';
+  $('#in-prev').disabled = !fronts.length;
+  $('#in-next').disabled = !fronts.length;
+  if (pos === 0) {
+    $('#in-cap').textContent = `average of up to ${HI_N} sheets · arrows step through ` +
+      'single sheets · hover to magnify';
+    placeholder(cv, n && !n.template ? nodeImage(n) : t.img, () => token === mainToken);
+    const hi = await hiConsensus(n ? n.id : 'blank', n ? n.members : fronts, n && n.cons);
+    if (token === mainToken) copyTo(cv, hi);
+    return;
+  }
+  const pi = fronts[pos - 1];
+  const p = state.pages[pi];
+  const k = state.sheets.findIndex((s) => s.front === pi);
+  $('#in-cap').textContent = `sheet #${k + 1} · ${p.file.name} page ${p.idx + 1} · hover to magnify`;
+  // render off-screen: pdf.js refuses two renders into one canvas at once
+  const off = document.createElement('canvas');
+  await drawLarge(pi, off, 1100);
+  if (token === mainToken) copyTo(cv, off);
+}
+
+function stepInspect(d) {
+  if (!inView || !inView.fronts.length) return;
+  const n = inView.fronts.length + 1;
+  showInspectPos((inView.pos + d + n) % n);
+}
+
+$('#in-prev').onclick = () => stepInspect(-1);
+$('#in-next').onclick = () => stepInspect(1);
+$('#inspect').addEventListener('keydown', (e) => {
+  if (e.key === 'ArrowLeft') { e.preventDefault(); stepInspect(-1); }
+  if (e.key === 'ArrowRight') { e.preventDefault(); stepInspect(1); }
+});
+
+function copyTo(canvas, src) {
+  canvas.width = src.width;
+  canvas.height = src.height;
+  canvas.getContext('2d').drawImage(src, 0, 0);
+}
+
+/** Draw a low-resolution image while the real one renders, unless stale. */
+function placeholder(canvas, url, current) {
   const img = new Image();
   img.onload = () => {
+    if (!current()) return;
     canvas.width = HI_W;
     canvas.height = Math.round(HI_W * TH / TW);
     canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height);
@@ -918,12 +1093,94 @@ drop.addEventListener('drop', (e) => {
 $('#file').addEventListener('change', (e) => readFiles(e.target.files));
 $('#reset-types').onclick = () => { autoCut(); renderTypesAndBelow(); };
 
-const src = new URLSearchParams(location.search).get('src');
-if (src) {
-  (async () => {
-    const items = await Promise.all(src.split(',').map(async (u) => ({
-      name: decodeURIComponent(u.split('/').pop()),
-      bytes: new Uint8Array(await (await fetch(u)).arrayBuffer()) })));
-    await addFiles(items);
-  })();
+/* ---------- templates ---------- */
+
+/** Load blank template PDFs; every non-blank page becomes a template. */
+async function addTemplates(items) {
+  items.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
+  const found = [];
+  for (const it of items) {
+    let doc;
+    try {
+      doc = await pdfjsLib.getDocument({ data: it.bytes.slice() }).promise;
+    } catch (e) {
+      alert(`Could not open ${it.name}: ${e.message}`);
+      continue;
+    }
+    const file = { name: it.name, bytes: it.bytes, doc, nPages: doc.numPages };
+    for (let i = 0; i < doc.numPages; i++) found.push({ file, idx: i, ...await renderPage(file, i) });
+  }
+  // blank pages (the back of a one-sided template) are not templates
+  const ref = Math.max(...state.templates.map((t) => t.energy), ...found.map((t) => t.energy));
+  const kept = found.filter((t) => t.energy >= 0.1 * ref);
+  for (const t of kept) {
+    const stem = t.file.name.replace(/\.pdf$/i, '');
+    const many = kept.filter((u) => u.file === t.file).length > 1;
+    state.templates.push({ ...t, name: many ? `${stem}_p${t.idx + 1}` : stem });
+  }
+  renderTemplates();
+  if (state.pages.length) { cluster(); renderAll(); }
 }
+
+function renderTemplates() {
+  $('#tpls').innerHTML = state.templates.map((t, k) =>
+    `<li>${esc(t.name)} <button class="icon small" data-rm="${k}" aria-label="remove">&times;</button></li>`).join('');
+  $('#tpl-clear').hidden = !state.templates.length;
+  for (const b of document.querySelectorAll('#tpls [data-rm]')) {
+    b.onclick = () => {
+      state.templates.splice(+b.dataset.rm, 1);
+      renderTemplates();
+      if (state.pages.length) { cluster(); renderAll(); }
+    };
+  }
+}
+
+async function readTemplates(list) {
+  const pdfs = [...list].filter((f) => /\.pdf$/i.test(f.name) || f.type === 'application/pdf');
+  if (!pdfs.length) return;
+  await addTemplates(await Promise.all(pdfs.map(async (f) => ({
+    name: f.name, bytes: new Uint8Array(await f.arrayBuffer()) }))));
+}
+
+const tplDrop = $('#tpl-drop');
+tplDrop.addEventListener('dragover', (e) => { e.preventDefault(); tplDrop.classList.add('over'); });
+tplDrop.addEventListener('dragleave', () => tplDrop.classList.remove('over'));
+tplDrop.addEventListener('drop', (e) => {
+  e.preventDefault();
+  e.stopPropagation();
+  tplDrop.classList.remove('over');
+  readTemplates(e.dataTransfer.files);
+});
+$('#tpl-file').addEventListener('change', (e) => readTemplates(e.target.files));
+$('#tpl-clear').onclick = () => {
+  state.templates = [];
+  renderTemplates();
+  if (state.pages.length) { cluster(); renderAll(); }
+};
+
+/* ---------- example ---------- */
+
+const fetchItems = (urls) => Promise.all(urls.map(async (u) => ({
+  name: decodeURIComponent(u.split('/').pop()),
+  bytes: new Uint8Array(await (await fetch(u)).arrayBuffer()) })));
+
+/** Load the bundled fictional quiz scans, optionally with its templates. */
+async function loadExample(withTemplates) {
+  if (state.pages.length || state.templates.length) {
+    location.href = `${location.pathname}?example=${withTemplates ? 'templates' : 'scans'}`;
+    return;
+  }
+  const m = await (await fetch('demo/manifest.json')).json();
+  if (withTemplates) await addTemplates(await fetchItems(m.templates));
+  await addFiles(await fetchItems(m.scans));
+}
+$('#demo-scans').onclick = () => loadExample(false);
+$('#demo-tpl').onclick = () => loadExample(true);
+$('#clear-all').onclick = () => { location.href = location.pathname; };
+
+const params = new URLSearchParams(location.search);
+(async () => {
+  if (params.get('tpl')) await addTemplates(await fetchItems(params.get('tpl').split(',')));
+  if (params.get('src')) await addFiles(await fetchItems(params.get('src').split(',')));
+  if (params.get('example')) await loadExample(params.get('example') === 'templates');
+})();
