@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>scan_split</title>
+<link rel="stylesheet" href="style.css">
+<script src="vendor/pdf-lib.min.js"></script>
+<script type="module" src="js/app.js"></script>
+</head>
+<body>
+<header>
+  <h1>scan_split</h1>
+  <p class="sub">Sort scanned exam pages into one PDF per question.
+    Everything runs in your browser; PDFs are never uploaded.</p>
+</header>
+
+<main>
+  <section id="load" class="card">
+    <div id="drop" class="drop">
+      <p><strong>Drop scanned PDFs here</strong> or
+        <label class="btn">choose files
+          <input type="file" id="file" accept="application/pdf,.pdf" multiple hidden>
+        </label></p>
+      <p class="hint">Files are stacked in name order. Page layout, page count
+        and headers are learned from the scans; nothing needs to be set up.</p>
+    </div>
+    <ul id="files"></ul>
+    <div id="progress" hidden>
+      <div class="bar"><span></span></div>
+      <p class="hint" id="progress-text"></p>
+    </div>
+  </section>
+
+  <section id="summary" class="card" hidden></section>
+
+  <section id="types" hidden>
+    <h2>1 &middot; Page types</h2>
+    <p class="hint">Each card is the average of every sheet of that type
+      (handwriting fades out, the printed page remains). Choose where each
+      type goes; backs always travel with their front.</p>
+    <div id="type-cards" class="type-grid"></div>
+  </section>
+
+  <section id="review" hidden>
+    <h2>2 &middot; Review sheets</h2>
+    <p class="hint">Click to select (shift-click for a range), then re-route
+      the selection. Double-click or &#10530; to inspect a sheet.</p>
+    <div id="filters" class="chips"></div>
+    <div id="bulk" class="bulk" hidden></div>
+    <div id="grid" class="grid"></div>
+  </section>
+
+  <section id="export" hidden>
+    <h2>3 &middot; Export</h2>
+    <div id="outputs"></div>
+  </section>
+</main>
+
+<dialog id="preview">
+  <form method="dialog" class="pv-head">
+    <span id="pv-title"></span>
+    <button class="icon" value="close" aria-label="Close">&times;</button>
+  </form>
+  <div class="pv-body">
+    <figure><canvas id="pv-front"></canvas><figcaption>front</figcaption></figure>
+    <figure><canvas id="pv-back"></canvas><figcaption>back</figcaption></figure>
+  </div>
+  <div class="pv-foot">
+    <button id="pv-prev" class="btn ghost">&larr; prev</button>
+    <label>Send to <select id="pv-dest"></select></label>
+    <button id="pv-swap" class="btn ghost">swap front / back</button>
+    <button id="pv-next" class="btn ghost">next &rarr;</button>
+  </div>
+</dialog>
+</body>
+</html>
