@@ -8,8 +8,8 @@
  * null for a blank page. S is the (N, N) all-pairs NCC matrix, row-major.
  */
 
-export const GRID_W = 64;
-export const GRID_H = 83;
+export const GRID_W = 128;
+export const GRID_H = 166;
 
 /** Build a normalized 1-D Gaussian kernel, radius 4 sigma (as scipy). */
 function kernel(sigma) {
@@ -195,6 +195,32 @@ export function typicality(S, n, k = 5) {
   return out;
 }
 
+/**
+ * Compute the best NCC of two (GRID_H, GRID_W) features over small shifts.
+ *
+ * Absorbs scanner feed offsets (a sheet placed a few mm off) that would
+ * otherwise cost a page its match. r is in grid cells.
+ */
+export function shiftDot(a, b, r = 3, w = GRID_W, h = GRID_H) {
+  let best = -Infinity;
+  for (let dy = -r; dy <= r; dy++) {
+    for (let dx = -r; dx <= r; dx++) {
+      let s = 0;
+      const y0 = Math.max(0, -dy);
+      const y1 = Math.min(h, h - dy);
+      const x0 = Math.max(0, -dx);
+      const x1 = Math.min(w, w - dx);
+      for (let y = y0; y < y1; y++) {
+        const ra = y * w;
+        const rb = (y + dy) * w + dx;
+        for (let x = x0; x < x1; x++) s += a[ra + x] * b[rb + x];
+      }
+      if (s > best) best = s;
+    }
+  }
+  return best;
+}
+
 /** Center and normalize a vector in place. */
 function unit(c) {
   let m = 0;
@@ -253,7 +279,7 @@ function twoMeans(F, idx, S, n, nIter = 20) {
  * @returns {{labels: Int32Array, cons: Float32Array[]}} labels (m,),
  *   numbered by first appearance in idx; cons (k,) consensus per type
  */
-export function pageTypes(F, idx, S, n, splitNcc = 0.7, minSize = 3) {
+export function pageTypes(F, idx, S, n, splitNcc = 0.8, minSize = 3) {
   const m = idx.length;
   let lab = new Int32Array(m);
   if (!m) return { labels: lab, cons: [] };
@@ -278,8 +304,9 @@ export function pageTypes(F, idx, S, n, splitNcc = 0.7, minSize = 3) {
     const vs = idx.filter((_, a) => lab[a] === k).map((p) => F[p]);
     if (vs.length) cons.push(consensus(vs));
   }
-  // final assignment to nearest consensus, relabelled by first appearance
-  const raw = idx.map((p) => argmax(cons.map((c) => dot(F[p], c))));
+  // final assignment to nearest consensus, shift-tolerant, relabelled by
+  // first appearance
+  const raw = idx.map((p) => argmax(cons.map((c) => shiftDot(F[p], c))));
   const order = [];
   for (const r of raw) if (!order.includes(r)) order.push(r);
   lab = Int32Array.from(raw, (r) => order.indexOf(r));

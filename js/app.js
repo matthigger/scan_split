@@ -15,9 +15,10 @@ import * as P from './pipeline.js';
 pdfjsLib.GlobalWorkerOptions.workerSrc = new URL(
   '../vendor/pdf.worker.min.mjs', import.meta.url).href;
 
-// feature render size: 4x the pipeline's feature grid
-const TW = P.GRID_W * 4;
-const TH = P.GRID_H * 4;
+// thumbnail / render size; features are this shrunk by DOWN
+const TW = 256;
+const TH = 332;
+const DOWN = TW / P.GRID_W;
 const COLORS = ['#3b73d9', '#e0762b', '#3f9d58', '#d64550', '#8a5cc7',
   '#1f9e9e', '#c49a1a', '#d45fa6', '#7a6a58', '#5d7a8c'];
 const BLANK = -1;
@@ -44,7 +45,7 @@ const state = {
   typ: null,
   duplexAuto: false,
   duplexMode: 'auto',
-  splitNcc: 0.7,
+  splitNcc: 0.8,
   period: null,
   selected: new Set(),
   anchor: null,
@@ -122,7 +123,7 @@ async function renderPage(file, idx) {
     ink[i] = 255 - Math.round(0.299 * rgba[4 * i] + 0.587 * rgba[4 * i + 1] +
       0.114 * rgba[4 * i + 2]);
   }
-  const { v, energy } = P.featurize(P.downsample(ink, TW, TH, 4));
+  const { v, energy } = P.featurize(P.downsample(ink, TW, TH, DOWN));
   return { file, idx, thumb: URL.createObjectURL(blob), v, energy, ink };
 }
 
@@ -171,7 +172,7 @@ function cluster() {
   const { labels, cons } = P.pageTypes(F, idx, state.S, pages.length, state.splitNcc);
   live.forEach((s, a) => {
     s.type = labels[a];
-    const sims = cons.map((c) => P.dot(F[s.front], c)).sort((x, y) => y - x);
+    const sims = cons.map((c) => P.shiftDot(F[s.front], c)).sort((x, y) => y - x);
     s.margin = sims.length > 1 ? sims[0] - sims[1] : sims[0];
   });
   state.outputs = cons.map((_, k) => ({ id: `o${k}`, name: `type_${letter(k)}` }));

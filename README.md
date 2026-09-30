@@ -16,6 +16,8 @@ Nothing is uploaded; PDFs stay on your machine.
    In a duplex scan, consecutive pages pair into sheets; a sheet's front is the side with near-copies elsewhere in the stack, and the back always travels with it, even when a sheet was fed back-first.
 3. Fronts are clustered into page types by bisecting k-means, splitting while the two halves' average images differ.
    Handwriting averages out, so each type's average is a clean picture of the printed page.
+   Each sheet then goes to its closest type, allowing a few mm of scanner offset.
+   The comparison grid is fine enough to separate versions of one question that differ only in wording and numbers (quiz a vs b).
 
 `proto/validate.py` is the reference implementation and its validation on real scans (shuffled sheets, flipped sheets, missing sheets, simulated colored paper).
 
@@ -24,6 +26,7 @@ Nothing is uploaded; PDFs stay on your machine.
 - `index.html`, `style.css`, `js/app.js`: interface
 - `js/pipeline.js`: matching (port of `proto/validate.py`)
 - `vendor/`: pdf.js 4.10.38 and pdf-lib 1.17.1, served locally
+- `proto/make_test_set.py`: shuffle scans into one test stack plus its expected sorted outputs (needs pypdf)
 
 Keep scans out of this repo: `test/` is git-ignored because real scans carry student names and IDs.
 

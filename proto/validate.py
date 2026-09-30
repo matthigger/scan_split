@@ -33,7 +33,7 @@ from PIL import Image
 from scipy.ndimage import gaussian_filter
 
 DPI = 30
-WIDTH = 64
+WIDTH = 128
 
 # gray-scan luminance of common paper stocks (Rec. 601 luma of sRGB)
 PAPER = {'white': 254, 'yellow': 245, 'green': 233, 'blue': 218,
@@ -112,6 +112,34 @@ def lag_sim(f, max_lag: int = 12):
                      for k in range(1, max_lag + 1)])
 
 
+def shift_sim(f, cons, r: int = 3):
+    """Compute best NCC of each page to each consensus over small shifts.
+
+    Absorbs scanner feed offsets (a sheet placed a few mm off). r is in
+    feature-grid cells.
+
+    Args:
+        f (np.array): (n, d) unit-norm page features
+        cons (np.array): (k, d) unit-norm consensus features
+
+    Returns:
+        sim (np.array): (n, k) max over shifts of the overlap dot product
+    """
+    h = f.shape[1] // WIDTH
+    a = f.reshape(len(f), h, WIDTH)
+    b = cons.reshape(len(cons), h, WIDTH)
+    best = np.full((len(f), len(cons)), -np.inf)
+    for dy in range(-r, r + 1):
+        for dx in range(-r, r + 1):
+            ya = slice(max(0, -dy), h - max(0, dy))
+            yb = slice(max(0, dy), h - max(0, -dy))
+            xa, xb = (slice(max(0, -dx), WIDTH - max(0, dx)),
+                      slice(max(0, dx), WIDTH - max(0, -dx)))
+            s = np.einsum('nyx,kyx->nk', a[:, ya, xa], b[:, yb, xb])
+            best = np.maximum(best, s)
+    return best
+
+
 def _unit(c):
     """Center and normalize rows."""
     c = c - c.mean(-1, keepdims=True)
@@ -132,7 +160,7 @@ def _two_means(f, n_iter: int = 20):
     return lab, c
 
 
-def page_types(f, split_ncc: float = 0.7, min_size: int = 3):
+def page_types(f, split_ncc: float = 0.8, min_size: int = 3):
     """Cluster pages into types by bisecting spherical k-means.
 
     A cluster is split when its two halves' consensus images (mean of
@@ -162,8 +190,8 @@ def page_types(f, split_ncc: float = 0.7, min_size: int = 3):
             lab[idx[sub == 1]] = new
             queue += [k, new]
     cons = _unit(np.array([f[lab == k].mean(0) for k in range(lab.max() + 1)]))
-    # final assignment to nearest consensus
-    lab = (f @ cons.T).argmax(1)
+    # final assignment to nearest consensus, shift-tolerant
+    lab = shift_sim(f, cons).argmax(1)
     return lab, cons
 
 
@@ -234,7 +262,7 @@ def run(imgs, truth, name: str, high_pass: bool = True):
         t, c = np.unique(truth_f[lab == k], return_counts=True)
         err += c.sum() - c.max()
         print(f'     type {k}: {dict(zip(t.tolist(), c.tolist()))}')
-    margin = np.sort(front @ cons.T, 1)
+    margin = np.sort(shift_sim(front, cons), 1)
     margin = margin[:, -1] - margin[:, -2] if len(cons) > 1 else margin[:, -1]
     print(f'   misrouted sheets: {err}/{len(lab)}   '
           f'min / median top-2 margin: {margin.min():.2f} / '
