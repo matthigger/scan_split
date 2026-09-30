@@ -35,10 +35,13 @@
   <section id="summary" class="card" hidden></section>
 
   <section id="types" hidden>
-    <h2>1 &middot; Page types</h2>
+    <div class="h-row"><h2>1 &middot; Page types</h2>
+      <button class="btn ghost small" id="reset-types">reset to automatic</button></div>
     <p class="hint">Each card is the average of every sheet of that type
-      (handwriting fades out, the printed page remains). Choose where each
-      type goes; backs always travel with their front.</p>
+      (handwriting fades out, the printed page remains); the magnifier shows it
+      large. A type's name is its output file. Split a type that hides two
+      versions, merge to undo; names and routing are kept either way. Backs
+      always travel with their front.</p>
     <div id="type-cards" class="type-grid"></div>
   </section>
 
@@ -56,6 +59,29 @@
     <div id="outputs"></div>
   </section>
 </main>
+
+<dialog id="inspect">
+  <form method="dialog" class="pv-head">
+    <span id="in-title"></span>
+    <button class="icon" value="close" aria-label="Close">&times;</button>
+  </form>
+  <div class="in-body">
+    <figure class="in-main"><canvas id="in-cons"></canvas>
+      <figcaption>average of up to 10 sheets &middot; hover to magnify</figcaption></figure>
+    <div class="in-side">
+      <div id="in-split-box">
+        <h3>If split</h3>
+        <p class="hint" id="in-score"></p>
+        <div class="in-kids">
+          <figure><canvas id="in-k0"></canvas><figcaption id="in-k0-cap"></figcaption></figure>
+          <figure><canvas id="in-k1"></canvas><figcaption id="in-k1-cap"></figcaption></figure>
+        </div>
+        <button class="btn" id="in-split">split into these two</button>
+      </div>
+      <button class="btn ghost" id="in-merge"></button>
+    </div>
+  </div>
+</dialog>
 
 <dialog id="preview">
   <form method="dialog" class="pv-head">

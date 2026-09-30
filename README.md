@@ -13,10 +13,11 @@ Nothing is uploaded; PDFs stay on your machine.
 
 1. Each page is rendered small, inverted, blurred, high-passed (removes paper tint and scanner shading) and normalized; two pages' similarity is the dot product (normalized cross-correlation).
 2. Near-empty pages are marked blank.
-   In a duplex scan, consecutive pages pair into sheets; a sheet's front is the side with near-copies elsewhere in the stack, and the back always travels with it, even when a sheet was fed back-first.
+   When the scanner also captured each sheet's (blank or written-on) back, consecutive pages pair into sheets; a sheet's front is the side with near-copies elsewhere in the stack, and the back always travels with it, even when a sheet was fed back-first.
 3. Fronts are clustered into page types by bisecting k-means, splitting while the two halves' average images differ.
    Handwriting averages out, so each type's average is a clean picture of the printed page.
    Each sheet then goes to its closest type, allowing a few mm of scanner offset.
+   The splits form a tree built once: the default types stop where a split would only separate handwriting, and each type card can split further or merge back without resetting any routing.
    The comparison grid is fine enough to separate versions of one question that differ only in wording and numbers (quiz a vs b).
 
 `proto/validate.py` is the reference implementation and its validation on real scans (shuffled sheets, flipped sheets, missing sheets, simulated colored paper).

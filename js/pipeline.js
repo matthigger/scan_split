@@ -196,13 +196,16 @@ export function typicality(S, n, k = 5) {
 }
 
 /**
- * Compute the best NCC of two (GRID_H, GRID_W) features over small shifts.
+ * Find the shift of b against a that maximizes their overlap dot product.
  *
- * Absorbs scanner feed offsets (a sheet placed a few mm off) that would
- * otherwise cost a page its match. r is in grid cells.
+ * Absorbs scanner feed offsets (a sheet placed a few mm off). r and the
+ * returned dy, dx are in grid cells; b's content sits dy, dx cells further
+ * down / right than a's.
+ *
+ * @returns {{dy: number, dx: number, s: number}}
  */
-export function shiftDot(a, b, r = 3, w = GRID_W, h = GRID_H) {
-  let best = -Infinity;
+export function bestShift(a, b, r = 3, w = GRID_W, h = GRID_H) {
+  let best = { dy: 0, dx: 0, s: -Infinity };
   for (let dy = -r; dy <= r; dy++) {
     for (let dx = -r; dx <= r; dx++) {
       let s = 0;
@@ -215,10 +218,15 @@ export function shiftDot(a, b, r = 3, w = GRID_W, h = GRID_H) {
         const rb = (y + dy) * w + dx;
         for (let x = x0; x < x1; x++) s += a[ra + x] * b[rb + x];
       }
-      if (s > best) best = s;
+      if (s > best.s) best = { dy, dx, s };
     }
   }
   return best;
+}
+
+/** Compute the best NCC of two features over small shifts. */
+export function shiftDot(a, b, r = 3) {
+  return bestShift(a, b, r).s;
 }
 
 /** Center and normalize a vector in place. */
@@ -267,54 +275,93 @@ function twoMeans(F, idx, S, n, nIter = 20) {
   return { sub, c };
 }
 
+// children whose plain NCCs differ by less than this get a shift-tolerant
+// second look
+const CLOSE = 0.1;
+
 /**
- * Cluster pages into types by bisecting spherical k-means.
+ * Lazily built bisection tree of pages; page types are a cut through it.
  *
- * A cluster splits when its two halves' consensus images correlate below
- * splitNcc: handwriting averages out of a consensus, so halves of one
- * printed page stay correlated while different printed pages do not.
+ * Each node holds a set of pages and their consensus. A node's children
+ * split it by spherical 2-means, computed on first request and then fixed,
+ * so moving the cut up (merge) or down (split) never reshuffles anything.
+ * A node's score is the NCC between its children's consensus images:
+ * handwriting averages out of a consensus, so the halves of one printed page
+ * score near 1 and two different printed pages score low.
  *
- * @param {Float32Array[]} F features by page index
- * @param {number[]} idx (m,) page indices to cluster, none blank
- * @returns {{labels: Int32Array, cons: Float32Array[]}} labels (m,),
- *   numbered by first appearance in idx; cons (k,) consensus per type
+ * Node: {id, members, cons, parent, children, score, first}; members are
+ * page indices, children is undefined until computed and null for a node
+ * that cannot split (one page, or identical pages), first is the earliest
+ * member in the stack.
  */
-export function pageTypes(F, idx, S, n, splitNcc = 0.8, minSize = 3) {
-  const m = idx.length;
-  let lab = new Int32Array(m);
-  if (!m) return { labels: lab, cons: [] };
-  let next = 1;
-  const queue = [0];
-  while (queue.length) {
-    const k = queue.pop();
-    const mem = [];
-    for (let a = 0; a < m; a++) if (lab[a] === k) mem.push(a);
-    if (mem.length < 2 * minSize) continue;
-    const { sub, c } = twoMeans(F, mem.map((a) => idx[a]), S, n);
-    const n1 = sub.reduce((s, x) => s + x, 0);
-    if (Math.min(n1, mem.length - n1) < minSize) continue;
-    if (dot(c[0], c[1]) < splitNcc) {
-      mem.forEach((a, j) => { if (sub[j]) lab[a] = next; });
-      queue.push(k, next);
-      next++;
+export class TypeTree {
+  /**
+   * @param {Float32Array[]} F features by page index
+   * @param {number[]} idx page indices to organize, none blank, non-empty
+   */
+  constructor(F, idx, S, n, minSize = 3) {
+    Object.assign(this, { F, S, n, minSize });
+    this.nodes = [];
+    this.root = this.make(idx, null);
+  }
+
+  make(members, parent) {
+    const node = {
+      id: this.nodes.length,
+      members,
+      cons: consensus(members.map((p) => this.F[p])),
+      parent,
+      children: undefined,
+      score: 1,
+      first: Math.min(...members),
+    };
+    this.nodes.push(node);
+    return node;
+  }
+
+  /** Return a node's two children, ordered by first page, or null. */
+  children(node) {
+    if (node.children !== undefined) return node.children;
+    node.children = null;
+    const mem = node.members;
+    if (mem.length < 2) return null;
+    const { sub, c } = twoMeans(this.F, mem, this.S, this.n);
+    for (let a = 0; a < mem.length; a++) {
+      const v = this.F[mem[a]];
+      if (Math.abs(dot(v, c[0]) - dot(v, c[1])) < CLOSE) {
+        sub[a] = shiftDot(v, c[1]) > shiftDot(v, c[0]) ? 1 : 0;
+      }
     }
+    const g = [[], []];
+    mem.forEach((p, a) => g[sub[a]].push(p));
+    if (!g[0].length || !g[1].length) return null;
+    g.sort((x, y) => Math.min(...x) - Math.min(...y));
+    node.children = g.map((m) => this.make(m, node));
+    node.score = dot(node.children[0].cons, node.children[1].cons);
+    return node.children;
   }
-  let cons = [];
-  for (let k = 0; k < next; k++) {
-    const vs = idx.filter((_, a) => lab[a] === k).map((p) => F[p]);
-    if (vs.length) cons.push(consensus(vs));
+
+  /**
+   * Cut the tree where a split would only separate handwriting.
+   *
+   * Splits leaving fewer than minSize pages on a side are outliers, not a
+   * page type; they stay available to split by hand.
+   */
+  autoCut(splitNcc = 0.8, node = this.root) {
+    const kids = this.children(node);
+    if (!kids || node.score >= splitNcc ||
+        Math.min(kids[0].members.length, kids[1].members.length) < this.minSize) {
+      return [node];
+    }
+    return [...this.autoCut(splitNcc, kids[0]),
+      ...this.autoCut(splitNcc, kids[1])];
   }
-  // final assignment to nearest consensus, shift-tolerant, relabelled by
-  // first appearance
-  const raw = idx.map((p) => argmax(cons.map((c) => shiftDot(F[p], c))));
-  const order = [];
-  for (const r of raw) if (!order.includes(r)) order.push(r);
-  lab = Int32Array.from(raw, (r) => order.indexOf(r));
-  cons = order.map((k) => {
-    const vs = idx.filter((_, a) => lab[a] === order.indexOf(k)).map((p) => F[p]);
-    return consensus(vs);
-  });
-  return { labels: lab, cons };
+
+  /** Test whether node lies in the subtree under anc. */
+  static within(node, anc) {
+    for (let x = node; x; x = x.parent) if (x === anc) return true;
+    return false;
+  }
 }
 
 export function argmax(xs) {
