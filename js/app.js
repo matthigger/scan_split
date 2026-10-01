@@ -716,9 +716,22 @@ function renderPartsAndBelow() {
   renderSummaryStats();
 }
 
+/** Return a cached object URL for an input file's original bytes. */
+const fileUrl = (f) => f.url ??=
+  URL.createObjectURL(new Blob([f.bytes], { type: 'application/pdf' }));
+
+/** Render a link that views an input file, plus one that downloads it. */
+const fileLinks = (f, label, page = 1) => {
+  const u = fileUrl(f);
+  return `<a href="${u}#page=${page}" target="_blank" rel="noopener"
+    title="view">${esc(label)}</a>
+    <a class="dl" href="${u}" download="${esc(f.name)}"
+    title="download ${esc(f.name)}">&#8595;</a>`;
+};
+
 function renderFiles() {
   $('#files').innerHTML = state.files.map((f) =>
-    `<li>${esc(f.name)} · ${f.nPages} p</li>`).join('');
+    `<li>${fileLinks(f, f.name)} · ${f.nPages} p</li>`).join('');
   $('#clear-all').hidden = !state.files.length;
 }
 
@@ -1379,7 +1392,7 @@ async function addTemplates(items) {
 
 function renderTemplates() {
   $('#tpls').innerHTML = state.templates.map((t, k) =>
-    `<li>${esc(t.name)} <button class="icon small" data-rm="${k}" aria-label="remove">&times;</button></li>`).join('');
+    `<li>${fileLinks(t.file, t.name, t.idx + 1)} <button class="icon small" data-rm="${k}" aria-label="remove">&times;</button></li>`).join('');
   $('#tpl-clear').hidden = !state.templates.length;
   for (const b of document.querySelectorAll('#tpls [data-rm]')) {
     b.onclick = () => {
