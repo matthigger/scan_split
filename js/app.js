@@ -46,10 +46,6 @@ const MATCH_GAP = 0.12;
 const MIN_JUDGE = 5;
 const TPL_BASE = 100000;
 const STRAY_BASE = 200000;
-const MAG = `<svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
-  <circle cx="10" cy="10" r="6.5" fill="none" stroke="currentColor" stroke-width="2.2"/>
-  <path d="M15 15l5.5 5.5M10 7v6M7 10h6" stroke="currentColor" stroke-width="2.2"
-    stroke-linecap="round"/></svg>`;
 
 const $ = (s) => document.querySelector(s);
 const esc = (s) => String(s).replace(/[&<>"']/g, (c) => (
@@ -735,8 +731,8 @@ function renderSummary() {
           <option value="on">on: each page and the blank back after it are one sheet</option>
           <option value="off">off: every page stands alone</option>
         </select></label>
-      <span class="hint">On when the scanner also captured each sheet's blank back;
-        off when backs carry questions or work. Changing this re-sorts from scratch.</span>
+      <span class="hint">Off if backs carry questions or work.
+        Changing this re-sorts from scratch.</span>
     </div>`;
   $('#blank-back-mode').value = state.blankBackMode;
   $('#blank-back-mode').onchange = (e) => {
@@ -781,16 +777,10 @@ const plural = (n, one, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
 
 function renderParts() {
   $('#reset-parts').hidden = !state.tree;
-  $('#parts-hint').textContent = (state.templates.length
-    ? 'One part per template file, or per page when the templates are one PDF, ' +
-      'plus any group of sheets no template matches (?1, ?2, …). The magnifier ' +
-      'shows a page\'s matched sheets averaged, next to its template.'
-    : 'Each page is the average of every sheet sorted to it (handwriting fades ' +
-      'out, the printed page remains); the magnifier shows it large. Split a ' +
-      'page that hides two versions, merge to undo.') +
-    ' A part\'s name is its output file; names and routing are kept as you ' +
-    'split, merge, join and separate.' +
-    (blankBacks() ? ' Blank backs travel with their front.' : '');
+  $('#parts-hint').textContent = state.templates.length
+    ? 'Sheets no template matches form parts ?1, ?2, …'
+    : 'Each image averages the sheets sorted to it; split one that hides ' +
+      'two versions.';
   const unused = state.parts.filter((t) => !t.nSheets);
   $('#parts-unused').hidden = !unused.length;
   $('#parts-unused').textContent = unused.length
@@ -808,10 +798,11 @@ function renderParts() {
       const partners = mergePartners(t.id);
       const canMerge = partners.length && !blocked;
       const splitTip = kids
-        ? `Split into ${kids[0].members.length} + ${kids[1].members.length} sheets; their averages correlate ${one.score.toFixed(2)} (near 1: same printed page, only handwriting differs)`
+        ? `halves correlate ${one.score.toFixed(2)} (near 1: same page)`
         : 'Cannot split: one sheet, or identical sheets';
-      const mergeTip = blocked ? `Separate part ${blocked}'s pages first`
-        : partners.length ? `Merge with ${partners.join(', ')}` : 'Nothing to merge with';
+      const mergeTip = blocked ? `Unstaple part ${blocked} first`
+        : partners.length ? `Same printed page as ${partners.join(', ')}`
+          : 'Nothing to merge with';
       tree = `<div class="tree-actions">
         <button class="btn ghost small" data-split="${esc(t.id)}" title="${esc(splitTip)}"${kids ? '' : ' disabled'}>split${kids ? ` <span class="score">${kids[0].members.length}+${kids[1].members.length}</span>` : ''}</button>
         <button class="btn ghost small" data-merge="${esc(t.id)}" title="${esc(mergeTip)}"${canMerge ? '' : ' disabled'}>merge${canMerge ? ` with ${esc(partners.join(', '))}` : ''}</button>
@@ -819,25 +810,25 @@ function renderParts() {
     }
     const others = joinable.filter((x) => x !== t);
     const join = t.id !== BLANK_PART && others.length
-      ? `<select class="join" data-join="${esc(t.id)}" aria-label="join part ${esc(t.label)} with another part"
-          title="make a multi-page part of these pages and another part's">
-          <option value="">join with…</option>
+      ? `<select class="join" data-join="${esc(t.id)}" aria-label="staple part ${esc(t.label)} to another part"
+          title="each student's pages in order, one PDF">
+          <option value="">staple to…</option>
           ${others.map((x) => `<option value="${esc(x.id)}">${esc(x.label)} · ${esc(outputName(x.out))}</option>`).join('')}
         </select>` : '';
     const sep = multi ? `<button class="btn ghost small" data-separate="${esc(t.id)}"
-      title="split back into one-page parts">separate pages</button>` : '';
+      title="back into one-page parts">unstaple</button>` : '';
     const thumbs = (multi ? t.nodes : [t.nodes[0] ?? null]).map((n, j) => `<div class="thumb">
         <img src="${t.imgs[j]}" alt="average of part ${esc(t.label)}${multi ? ` page ${j + 1}` : ''}">
         ${multi ? `<span class="pg">p${j + 1}</span>` : ''}
-        <button class="mag" data-inspect="${n ? n.id : BLANK}" title="examine this page">${MAG}</button></div>`).join('');
+        <button class="zoom" data-inspect="${n ? n.id : BLANK}" title="inspect">&#10530;</button></div>`).join('');
     const count = multi
-      ? `<span class="hint" title="complete copies: one student's ${t.nodes.length} pages in a row">${plural(t.n, 'copy', 'copies')}</span>`
+      ? `<span class="hint" title="complete copies">${plural(t.n, 'copy', 'copies')}</span>`
       : `<span class="hint" title="sheets">${t.nSheets}</span>`;
     return `<div class="part-card${multi ? ' wide' : ''}" style="--c:${t.color}">
       <div class="pages" style="--k:${Math.min(t.nodes.length || 1, 4)}">${thumbs}</div>
       <div class="row"><span class="tag">${esc(t.label)}</span>
         ${t.out ? `<input type="text" class="name" data-out="${t.out}" value="${esc(outputName(t.out))}"
-          aria-label="name of part ${esc(t.label)}" title="name; also its output file name">` : '<span class="name">blank pages</span>'}
+          aria-label="name of part ${esc(t.label)}" title="output file name">` : '<span class="name">blank pages</span>'}
         ${count}</div>
       ${t.nIncomplete ? `<p class="warn-line">${plural(t.nIncomplete, 'incomplete copy', 'incomplete copies')}</p>` : ''}
       <label class="dest">send to <select data-part="${esc(t.id)}">${destOptions(t.dest)}</select></label>
@@ -1105,11 +1096,11 @@ async function openInspector(id) {
   const partners = one && !mergeSet(t.id).blocked ? mergePartners(t.id) : [];
   $('#in-merge').hidden = !partners.length;
   $('#in-merge').textContent = `merge with ${partners.join(', ')}`;
+  $('#in-merge').title = `Same printed page as ${partners.join(', ')}`;
   $('#in-merge').onclick = () => { dlg.close(); mergePart(t.id); };
   if (kids) {
-    $('#in-score').textContent = `If split, the two halves' averages correlate ${n.score.toFixed(2)}. ` +
-      'Near 1 means the same printed page (only handwriting differs); ' +
-      'lower means different pages or versions. Compare the two below.';
+    $('#in-score').textContent = `Halves correlate ${n.score.toFixed(2)} ` +
+      '(near 1: same printed page, only handwriting differs).';
     $('#in-k0-cap').textContent = plural(kids[0].members.length, 'sheet');
     $('#in-k1-cap').textContent = plural(kids[1].members.length, 'sheet');
     $('#in-split').onclick = () => { dlg.close(); splitPart(t.id); };
@@ -1140,8 +1131,7 @@ async function showInspectPos(pos) {
   $('#in-prev').disabled = !fronts.length;
   $('#in-next').disabled = !fronts.length;
   if (pos === 0) {
-    $('#in-cap').textContent = `average of up to ${HI_N} sheets · arrows step through ` +
-      'single sheets · hover to magnify';
+    $('#in-cap').textContent = `average of up to ${HI_N} sheets`;
     placeholder(cv, n && !n.template ? nodeImage(n) : img, () => token === mainToken);
     const hi = await hiConsensus(n ? n.id : 'blank', n ? n.members : fronts, n && n.cons);
     if (token === mainToken) copyTo(cv, hi);
@@ -1150,7 +1140,7 @@ async function showInspectPos(pos) {
   const pi = fronts[pos - 1];
   const p = state.pages[pi];
   const k = state.sheets.findIndex((s) => s.front === pi);
-  $('#in-cap').textContent = `sheet #${k + 1} · ${p.file.name} page ${p.idx + 1} · hover to magnify`;
+  $('#in-cap').textContent = `sheet #${k + 1} · ${p.file.name} page ${p.idx + 1}`;
   // render off-screen: pdf.js refuses two renders into one canvas at once
   const off = document.createElement('canvas');
   await drawLarge(pi, off, 1100);
@@ -1269,7 +1259,7 @@ function renderExport() {
     <div class="out-actions">
       <button class="btn" id="dl-all">download all</button>
       ${blankBacks() ? `<label><input type="checkbox" id="omit-blank"${state.omitBlankBacks ? ' checked' : ''}>
-        leave out blank backs (off keeps every sheet at 2 pages, as Gradescope expects)</label>` : ''}
+        leave out blank backs (Gradescope expects 2 pages per sheet)</label>` : ''}
     </div>`;
   for (const inp of document.querySelectorAll('#outputs input[type=text]')) {
     inp.onchange = () => {

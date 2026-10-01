@@ -13,7 +13,7 @@
   <h1>scan_split</h1>
   <p class="sub">Sort scanned exam pages into one PDF per question.
     Everything runs in your browser; PDFs are never uploaded.</p>
-  <p class="hint example">New here? Try a fictional quiz stack of 24 made-up students:
+  <p class="hint example">Try an example quiz of 24 made-up students:
     <button class="link" id="demo-tpl">with templates</button> ·
     <button class="link" id="demo-scans">scans only</button></p>
 </header>
@@ -29,8 +29,7 @@
     <ul id="files"></ul>
     <div id="tpl-drop" class="tpl-row">
       <div><strong>Page templates</strong> <span class="hint">(optional) the blank exam:
-        one PDF of the whole exam, or one PDF per question. Each sheet is sorted to
-        its closest template page.</span></div>
+        one PDF, or one per question.</span></div>
       <div class="tpl-actions">
         <label class="btn ghost small">add templates
           <input type="file" id="tpl-file" accept="application/pdf,.pdf" multiple hidden></label>
@@ -51,12 +50,10 @@
     <div class="h-row"><h2>Parts</h2>
       <button class="btn ghost small" id="reset-parts">reset to automatic</button></div>
     <p class="hint" id="parts-hint"></p>
-    <p class="note"><b>Multi-page parts.</b> A part is one or more pages that go
-      to one output, e.g. a question spanning two pages; a copy is one student's
-      pages of it. Use <i>join with…</i> to combine parts. A multi-page part's
-      pages are assumed to be contiguous in the scanned input: each copy's pages
-      in a row (blank sheets aside), in the same order every time. Runs that break
-      off or start mid-part are flagged as incomplete copies.</p>
+    <p class="note"><b>Multi-page parts.</b> Use <i>staple to…</i> when a
+      question spans pages. Each copy (one student's pages of a part) must be
+      contiguous in the scans and in the same order, or it is flagged
+      incomplete.</p>
     <p class="hint" id="parts-unused" hidden></p>
     <div id="part-cards" class="part-grid"></div>
   </section>
@@ -69,9 +66,8 @@
 
   <section id="review" hidden>
     <h2>Review</h2>
-    <p class="hint">Click to select (shift-click for a range), then re-route
-      the selection; a multi-page part's copy moves as one. Double-click or
-      &#10530; to inspect a sheet.</p>
+    <p class="hint">Shift-click selects a range; a multi-page part's copy
+      moves as one.</p>
     <div id="filters" class="chips"></div>
     <div id="bulk" class="bulk" hidden></div>
     <div id="grid" class="grid"></div>
@@ -105,7 +101,7 @@
       <button class="btn ghost" id="in-merge"></button>
       <div id="in-tpl-box" hidden>
         <h3>Template</h3>
-        <figure><canvas id="in-tpl"></canvas><figcaption>the uploaded blank page</figcaption></figure>
+        <figure><canvas id="in-tpl"></canvas></figure>
       </div>
     </div>
   </div>
