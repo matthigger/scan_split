@@ -41,7 +41,7 @@ Re-routing any sheet of a multi-page copy moves the whole copy.
 - `js/pipeline.js`: matching (port of `proto/validate.py`)
 - `vendor/`: pdf.js 4.10.38 and pdf-lib 1.17.1, served locally
 - `proto/make_test_set.py`: shuffle scans into one test stack plus its expected sorted outputs (needs pypdf)
-- `demo/`: the example: fictional DEMO 101 templates (`src/page.tex`, `src/build.sh`) and a fake scanned stack of 24 students with generated handwriting (`src/make_scans.py`, needs handwriting .ttf fonts such as Caveat, Gochi Hand, Kalam from Google Fonts); `demo_key.csv` is its answer key
+- `demo/`: the example: fictional DEMO 101 templates in two versions, with a two-page Q3 (`src/page.tex`, `src/build.sh`), and a fake scanned stack of 24 students with generated handwriting (`src/make_scans.py`, needs handwriting .ttf fonts from Google Fonts, OFL or Apache 2.0, listed in its docstring); doodles come from the Quick, Draw! Dataset by Google, CC BY 4.0 (`src/doodles.json`, fetched by `src/fetch_doodles.py`); `demo_key.csv` is its answer key
 
 Keep scans out of this repo: `test/` is git-ignored because real scans carry student names and IDs.
 
