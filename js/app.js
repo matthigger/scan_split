@@ -556,57 +556,64 @@ function mergePart(key) {
   renderPartsAndBelow();
 }
 
-function* permutations(xs) {
-  if (xs.length <= 1) { yield xs; return; }
-  for (let i = 0; i < xs.length; i++) {
-    for (const r of permutations([...xs.slice(0, i), ...xs.slice(i + 1)])) yield [xs[i], ...r];
-  }
-}
-
 /**
  * Put a would-be part's layouts in page order.
  *
- * Template pages keep the templates' order. Otherwise the order is read off
- * the stack: steps[a][b] counts sheets of layout b directly after one of
- * layout a (blank sheets skipped), and the order with the most steps
- * between neighbouring pages wins, ties going to stack order.
+ * steps[a][b] counts sheets of layout b directly after one of layout a
+ * (blank sheets skipped). An order is linked when every page follows the
+ * one before it in at least half the sheets of the rarer of the two, as
+ * copies are cut from runs of consecutive sheets; a stray neighbour (say,
+ * across a missing sheet) is not enough. Template pages keep the templates' order; otherwise
+ * the linked order with the most steps wins, ties going to stack order.
  *
- * @returns {{order: object[], steps: number}} steps is Infinity for templates
+ * @returns {{order: object[], linked: boolean}}
  */
 function pageOrder(nodes) {
-  if (nodes.every((n) => n.template)) {
-    const T = state.templates;
-    return { order: [...nodes].sort((a, b) => T.indexOf(a.template) - T.indexOf(b.template)),
-      steps: Infinity };
-  }
   const byFirst = [...nodes].sort((a, b) => (a.first - b.first) || 0);
   const at = new Map(byFirst.map((n, k) => [n.id, k]));
   const steps = byFirst.map(() => byFirst.map(() => 0));
+  const count = byFirst.map(() => 0);
   let prev = null;
   for (const s of state.sheets) {
     if (s.layout === BLANK) continue;
     const j = at.get(s.layout) ?? null;
+    if (j !== null) count[j]++;
     if (prev !== null && j !== null && j !== prev) steps[prev][j]++;
     prev = j;
   }
-  const score = (p) => p.slice(1).reduce((sc, k, i) => sc + steps[p[i]][k], 0);
+  const link = (a, b) =>
+    steps[a][b] > 0 && 2 * steps[a][b] >= Math.min(count[a], count[b]);
   const ids = byFirst.map((_, k) => k);
-  let best = { order: ids, steps: score(ids) };
-  // a part longer than this keeps stack order
-  if (ids.length <= 8) {
-    for (const p of permutations(ids)) {
-      const sc = score(p);
-      if (sc > best.steps) best = { order: p, steps: sc };
-    }
+  const linked = (p) => p.slice(1).every((k, i) => link(p[i], k));
+  const pick = (p) => ({ order: p.map((k) => byFirst[k]), linked: linked(p) });
+  if (nodes.every((n) => n.template)) {
+    const T = state.templates;
+    return pick([...ids].sort((a, b) =>
+      T.indexOf(byFirst[a].template) - T.indexOf(byFirst[b].template)));
   }
-  return { order: best.order.map((k) => byFirst[k]), steps: best.steps };
+  // a part longer than this keeps stack order
+  if (ids.length > 8) return pick(ids);
+  let best = null;
+  const walk = (p, rest, sc) => {
+    if (!rest.length) {
+      if (!best || sc > best.sc) best = { p, sc };
+      return;
+    }
+    for (const k of rest) {
+      if (p.length && !link(p.at(-1), k)) continue;
+      const st = p.length ? steps[p.at(-1)][k] : 0;
+      walk([...p, k], rest.filter((x) => x !== k), sc + st);
+    }
+  };
+  walk([], ids, 0);
+  return pick(best ? best.p : ids);
 }
 
 /**
  * Join two parts into one multi-page part, its pages in stack order.
  *
- * A part's pages must sit together in the scanned input, so parts whose
- * sheets never neighbour each other are refused. A new joined part takes
+ * A part's pages must sit together in the scanned input, so a pair with
+ * no linked order (see pageOrder) is refused. A new joined part takes
  * the earlier part's label and color and gets its own output (routed where
  * both parts went, if they agreed); joined before, it keeps its old name
  * and routing.
@@ -614,9 +621,9 @@ function pageOrder(nodes) {
 function joinParts(a, b) {
   const [ga, gb] = [groupOf(a), groupOf(b)];
   const [ma, mb] = [state.meta.get(a), state.meta.get(b)];
-  const { order, steps } = pageOrder([...ga, ...gb]);
-  if (!steps) {
-    alert(`Parts ${ma.label} and ${mb.label} never sit next to each other in the scans. ` +
+  const { order, linked } = pageOrder([...ga, ...gb]);
+  if (!linked) {
+    alert(`Parts ${ma.label} and ${mb.label} do not run consecutively in the scans. ` +
       'The pages of a multi-page part must be consecutive in the input.');
     renderParts();
     return;
@@ -821,7 +828,8 @@ function renderParts() {
         <button class="btn ghost small" data-merge="${esc(t.id)}" title="${esc(mergeTip)}"${canMerge ? '' : ' disabled'}>merge${canMerge ? ` with ${esc(partners.join(', '))}` : ''}</button>
       </div>`;
     }
-    const others = joinable.filter((x) => x !== t);
+    const others = joinable.filter((x) => x !== t &&
+      pageOrder([...groupOf(t.id), ...groupOf(x.id)]).linked);
     const join = t.id !== BLANK_PART && others.length
       ? `<select class="join" data-join="${esc(t.id)}" aria-label="staple part ${esc(t.label)} to another part"
           title="each student's pages in order, one PDF">
