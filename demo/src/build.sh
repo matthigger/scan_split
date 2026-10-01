@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
-# Build the DEMO 101 page templates into ../templates (one PDF per question).
+# Build the DEMO 101 page templates into ../templates (one PDF per question,
+# plus the reference sheet that double-sided printing puts on the cover's
+# back).
 set -euo pipefail
 cd "$(dirname "$0")"
 tmp=$(mktemp -d)
@@ -9,6 +11,7 @@ build() {
   cp "$tmp/$1.pdf" ../templates/
 }
 build cover a cover
+build reference a ref
 for v in a b; do
   build "quiz1${v}_q1_coins" "$v" q1
   build "quiz1${v}_q2_boundary" "$v" q2

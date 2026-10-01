@@ -1,4 +1,6 @@
 {
-  "scans": ["demo/demo_scans.pdf"],
-  "templates": ["demo/templates/cover.pdf", "demo/templates/quiz1a_q1_coins.pdf", "demo/templates/quiz1a_q2_boundary.pdf", "demo/templates/quiz1a_q3_logistic.pdf", "demo/templates/quiz1b_q1_coins.pdf", "demo/templates/quiz1b_q2_boundary.pdf", "demo/templates/quiz1b_q3_logistic.pdf"]
+  "examples": {
+    "one-sided": {"scans": ["demo/one_sided_scans.pdf"]},
+    "double-sided": {"scans": ["demo/double_sided_scans.pdf"]}
+  }
 }

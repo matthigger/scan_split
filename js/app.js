@@ -1419,23 +1419,25 @@ const fetchItems = (urls) => Promise.all(urls.map(async (u) => ({
   name: decodeURIComponent(u.split('/').pop()),
   bytes: new Uint8Array(await (await fetch(u)).arrayBuffer()) })));
 
-/** Load the bundled fictional quiz scans, optionally with its templates. */
-async function loadExample(withTemplates) {
+/** Load a bundled fictional quiz stack, named as in demo/manifest.json. */
+async function loadExample(name) {
   if (state.pages.length || state.templates.length) {
-    location.href = `${location.pathname}?example=${withTemplates ? 'templates' : 'scans'}`;
+    location.href = `${location.pathname}?example=${name}`;
     return;
   }
   const m = await (await fetch('demo/manifest.json')).json();
-  if (withTemplates) await addTemplates(await fetchItems(m.templates));
-  await addFiles(await fetchItems(m.scans));
+  await addFiles(await fetchItems(m.examples[name].scans));
 }
-$('#demo-scans').onclick = () => loadExample(false);
-$('#demo-tpl').onclick = () => loadExample(true);
+document.querySelectorAll('[data-example]').forEach((b) => {
+  b.onclick = () => loadExample(b.dataset.example);
+});
 $('#clear-all').onclick = () => { location.href = location.pathname; };
 
 const params = new URLSearchParams(location.search);
 (async () => {
   if (params.get('tpl')) await addTemplates(await fetchItems(params.get('tpl').split(',')));
   if (params.get('src')) await addFiles(await fetchItems(params.get('src').split(',')));
-  if (params.get('example')) await loadExample(params.get('example') === 'templates');
+  // scans and templates: aliases of one-sided, for existing links
+  const ex = params.get('example');
+  if (ex) await loadExample(['scans', 'templates'].includes(ex) ? 'one-sided' : ex);
 })();

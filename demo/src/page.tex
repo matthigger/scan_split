@@ -1,6 +1,6 @@
 % One question of the fictional DEMO 101 quiz used by the scan_split example.
 % Build (see build.sh): pdflatex -jobname=<ver>_<pg> "\def\ver{a}\def\pg{q1}\input{page}"
-% \ver in {a, b} picks the version's numbers; \pg in {cover, q1, q2, q3}.
+% \ver in {a, b} picks the version's numbers; \pg in {cover, ref, q1, q2, q3}.
 \documentclass[11pt]{article}
 \usepackage[letterpaper, margin=0.9in]{geometry}
 \usepackage{amsmath, amssymb, booktabs, tikz, tcolorbox}
@@ -42,6 +42,25 @@
   \end{tcolorbox}
   \vfill
   \begin{center}\large 20 minutes \quad$\cdot$\quad 20 points\end{center}
+}{}
+
+% the cover's back in the double-sided printing; unnumbered, like the cover
+\ifthenelse{\equal{\pg}{ref}}{%
+  \textbf{Reference}\par\smallskip
+  \begin{tabular}{@{}l l@{}}
+    Bayes' rule & $P(A \mid B) = P(B \mid A)\, P(A) / P(B)$\\[2pt]
+    Total probability & $P(B) = \sum_i P(B \mid A_i)\, P(A_i)$\\[2pt]
+    Binomial & $P(K = k) = \binom{n}{k} p^k (1 - p)^{n - k}$\\[2pt]
+    Linear classifier & $\hat y = \mathbb{1}[w^\top x + b > 0]$,
+      boundary $w^\top x + b = 0$\\[2pt]
+    Sigmoid & $\sigma(z) = 1 / (1 + e^{-z})$,
+      $\sigma'(z) = \sigma(z)(1 - \sigma(z))$\\
+  \end{tabular}
+  \medskip
+  \begin{tcolorbox}[colback=white, colframe=black!70!white, boxrule=0.8pt,
+      sharp corners, height=6.6in, title={Scratch work (not graded)},
+      coltitle=black, colbacktitle=black!8!white]
+  \end{tcolorbox}
 }{}
 
 \ifthenelse{\equal{\pg}{q1}}{%

@@ -1,35 +1,38 @@
-"""Fake a scanned stack of filled-in DEMO 101 quizzes for the example.
+"""Fake scanned stacks of filled-in DEMO 101 quizzes for the examples.
 
-Each fictional student's exam is five sheets of one quiz version: cover,
-Q1, Q2 and the two pages of Q3, printed on the front with a blank back.
+A student's exam is one quiz version's cover, Q1, Q2 and two-page Q3,
+printed one of two ways (SHEETS): one_sided, five sheets with blank backs,
+scanned too, so the app's blank-back mode switches on; double_sided, three
+sheets (cover / reference, Q1 / Q2, Q3 p1 / Q3 p2), so it stays off.
+
 Question pages get messy fake handwriting: name and ID, several lines of
 working with uneven baselines and pen pressure, crossed-out and scribbled
 lines, arrows, circled answers, notes in the margins, a sketch on each
 page's figure, the odd doodle, and erased pencil. Every page then gets scan
 effects: slight rotation and offset, lamp shading, paper tone, blur, noise
-and JPEG compression.
+and JPEG compression. Each stack also carries mistakes scan_split should
+handle (see one_sided, double_sided); each student's sheets are contiguous
+and in order.
 
-The stack carries the mistakes scan_split should handle: a missing Q2
-sheet, a copy of Q3 missing its continuation page (an incomplete copy), two
-sheets fed back-first, work continued on some backs, one skewed sheet and
-one darker scan. Each student's sheets are contiguous and in order.
+Writes <stack>_scans.pdf and <stack>_key.csv, one row per sheet in stack
+order:
 
-Writes demo_scans.pdf and demo_key.csv, one row per sheet in stack order:
+    {sheet, student, version, front, back, flipped, scan}
 
-    {sheet, student, version, page, flipped, back_work, scan}
-
-    page (str): cover, q1, q2, q3p1 or q3p2
-    flipped, back_work (int): 1 if fed back-first / back carries work
+    front, back (str): printed page (cover, ref, q1, q2, q3p1, q3p2), or
+        for an unprinted back blank / work (carries handwriting)
+    flipped (int): 1 if fed back-first
     scan (str): normal, skewed or dark
 
-Usage: python make_scans.py fonts_dir [seed]
-    fonts_dir holds handwriting .ttf files: Architects Daughter, Caveat,
-    Covered By Your Grace, Gloria Hallelujah, Gochi Hand, Handlee, Indie
-    Flower, Kalam, Nanum Pen Script, Nothing You Could Do, Patrick Hand,
-    Reenie Beanie, Shadows Into Light (OFL), Homemade Apple, Just Another
-    Hand, Schoolbell (Apache 2.0), all from Google Fonts. Templates are read
-    from ../templates; doodles.json (see fetch_doodles.py) holds doodles
-    from the Quick, Draw! Dataset (Google, CC BY 4.0).
+Usage: python make_scans.py fonts_dir [stack ...]
+    stack is one_sided or double_sided (default both), each with a fixed
+    seed. fonts_dir holds handwriting .ttf files: Architects Daughter,
+    Caveat, Covered By Your Grace, Gloria Hallelujah, Gochi Hand, Handlee,
+    Indie Flower, Kalam, Nanum Pen Script, Nothing You Could Do, Patrick
+    Hand, Reenie Beanie, Shadows Into Light (OFL), Homemade Apple, Just
+    Another Hand, Schoolbell (Apache 2.0), all from Google Fonts. Templates
+    are read from ../templates; doodles.json (see fetch_doodles.py) holds
+    doodles from the Quick, Draw! Dataset (Google, CC BY 4.0).
 """
 import csv
 import glob
@@ -48,10 +51,17 @@ HERE = pathlib.Path(__file__).parent
 TEMPLATES = HERE.parent / 'templates'
 OUT = HERE.parent
 PAGES = ('cover', 'q1', 'q2', 'q3p1', 'q3p2')
+# each stack's sheets as (front, back); None is an unprinted back
+SHEETS = {'one_sided': [(p, None) for p in PAGES],
+          'double_sided': [('cover', 'ref'), ('q1', 'q2'),
+                           ('q3p1', 'q3p2')]}
+SEED = {'one_sided': 4, 'double_sided': 11}
 # (page, version) -> (template file, page index)
-TEMPLATE = {('cover', 'a'): ('cover.pdf', 0), ('cover', 'b'): ('cover.pdf', 0)}
+TEMPLATE = {}
 for _v in 'ab':
-    TEMPLATE |= {('q1', _v): (f'quiz1{_v}_q1_coins.pdf', 0),
+    TEMPLATE |= {('cover', _v): ('cover.pdf', 0),
+                 ('ref', _v): ('reference.pdf', 0),
+                 ('q1', _v): (f'quiz1{_v}_q1_coins.pdf', 0),
                  ('q2', _v): (f'quiz1{_v}_q2_boundary.pdf', 0),
                  ('q3p1', _v): (f'quiz1{_v}_q3_logistic.pdf', 0),
                  ('q3p2', _v): (f'quiz1{_v}_q3_logistic.pdf', 1)}
@@ -69,6 +79,10 @@ NAMES = ['Avery Chen', 'Jordan Blake', 'Priya Natarajan', 'Sam Okafor',
          'Grace Kim', 'Omar Sutherland', 'Hana Novak', 'Felix Adeyemi',
          'Ines Duarte', 'Marcus Webb', 'Lena Hoffmann', 'Theo Castillo',
          'Asha Menon', 'Jonah Pierce', 'Sofia Lindqvist', 'Ravi Kapoor']
+NAMES_2 = ['Maya Torres', 'Ethan Park', 'Zara Ali', 'Lucas Meyer',
+           'Amara Osei', 'Ben Carter', 'Yuki Tanaka', 'Clara Rossi',
+           'Nikhil Rao', 'Freya Larsen', 'Mateo Silva', 'Ruth Abebe',
+           'Owen Gallagher', 'Leila Farah', 'Jonas Berg', 'Tessa Quinn']
 
 # working per (page, version): one block of lines per free band of the
 # page, top to bottom; a block's last line is its answer
@@ -153,17 +167,18 @@ def render_template(pdf: pathlib.Path, page: int):
     return 1 - np.asarray(img, float) / 255
 
 
-def free_bands(tpl, min_h: int = 90) -> list:
+def free_bands(tpl, min_h: int = 90, cols: tuple = (0.1, 0.9)) -> list:
     """Find the blank horizontal bands of a page, where students write.
 
     Args:
         tpl (np.array): (H, W) template ink
+        cols (tuple): fractions of W between which a band must be blank
 
     Returns:
         bands (list): (y0, y1) px per band, top to bottom
     """
     H, W = tpl.shape
-    empty = tpl[:, int(0.1 * W):int(0.9 * W)].max(1) < 0.15
+    empty = tpl[:, int(cols[0] * W):int(cols[1] * W)].max(1) < 0.15
     bands, y, stop = [], int(0.13 * H), int(0.89 * H)
     while y < stop:
         if empty[y]:
@@ -521,15 +536,19 @@ def erase(cov, hand: Hand, text: str, x: float, y: float):
 
 
 def fill(page: str, version: str, hand: Hand, name: str, sid: str,
-         geo: dict, doodles: dict, back_work: bool, rng: random.Random):
+         geo: dict, doodles: dict, note: str | None, rng: random.Random):
     """Write a student's name, ID and working on one page.
 
     Args:
-        page (str): one of PAGES, or 'back' for the back of a question page
+        page (str): one of PAGES, 'ref', or 'back' for the unprinted back
+            of a question page
         geo (dict): the (front) page's template and layout,
-            {tpl, shape, bands, origin?, work?, q?, wrong?}; see main
+            {tpl, shape, bands, origin?, work?, q?, wrong?, cont?}; see
+            load_geo. For 'ref', cont is the geo of the question whose
+            work continues in the scratch box, or None
         doodles (dict): 'sketch' and 'scribble' lists of doodles.json
-        back_work (bool): the back carries work, so the front may say so
+        note (str | None): pointer to work continued elsewhere, which the
+            page may carry, e.g. 'see back'
 
     Returns:
         ink (np.array): (H, W) handwriting darkness in [0, 1]
@@ -552,6 +571,29 @@ def fill(page: str, version: str, hand: Hand, name: str, sid: str,
         band = (y + hand.cap * hand.pitch, rng.uniform(0.45, 0.85) * H)
         write_block(cov, draw, hand, lines, band, WRONG[geo['wrong']],
                     doodles['scribble'], rng, answer=rng.random() < 0.3)
+    elif page == 'ref':
+        y0, y1 = geo['bands'][0]
+        cont = geo['cont']
+        if cont:
+            y = y0 + rng.uniform(0.01, 0.04) * H
+            hand.write(cov, f'Q{cont["q"]} cont.',
+                       rng.uniform(0.13, 0.2) * W, y)
+            pool = [ln for b in cont['work'] for ln in b] + SCRATCH
+            lines = rng.sample(pool, min(len(pool), rng.randint(4, 11)))
+            band = (y + hand.cap * hand.pitch,
+                    y0 + rng.uniform(0.5, 0.8) * (y1 - y0))
+            y0 = write_block(cov, draw, hand, lines, band,
+                             WRONG[cont['wrong']], doodles['scribble'], rng,
+                             answer=rng.random() < 0.5)
+        if rng.random() < 0.4:
+            y = rng.uniform(y0, y0 + 0.6 * (y1 - y0))
+            write_block(cov, draw, hand,
+                        rng.sample(SCRATCH, rng.randint(1, 4)), (y, y1),
+                        sum(WRONG.values(), []), doodles['scribble'], rng,
+                        answer=False)
+        if rng.random() < 0.15:
+            hand.doodle(draw, rng.choice(sketches), rng.uniform(0.6, 0.8) * W,
+                        rng.uniform(0.7, 0.75) * H, rng.uniform(40, 70))
     else:
         rule = NAME_RULE * H - hand.cap - 3
         hand.write(cov, name, rng.uniform(0.2, 0.25) * W,
@@ -575,10 +617,10 @@ def fill(page: str, version: str, hand: Hand, name: str, sid: str,
                                 doodles['scribble'], rng, answer=False)
         if page in AXES:
             sketch_plot(cov, draw, hand, page, version, geo, rng)
-        if back_work and y is not None and rng.random() < 0.7:
+        if note and y is not None and rng.random() < 0.7:
             x = rng.uniform(0.55, 0.65) * W
             yb = min(y, 0.9 * H)
-            box = hand.write(cov, 'see back', x, yb)
+            box = hand.write(cov, note, x, yb)
             hand.arrow(draw, (box[2] + 4, yb + hand.cap / 2),
                        (box[2] + 50, yb + hand.cap / 2 + rng.gauss(0, 6)))
         if hand.pencil and rng.random() < 0.4:
@@ -628,34 +670,83 @@ def scan(ink, rng: random.Random, kind: str = 'normal', skew: float = 0.0):
                            .astype(np.uint8))
 
 
-def main():
-    fonts = sorted(pathlib.Path(sys.argv[1]).glob('*.ttf'))
-    assert fonts, 'no .ttf handwriting fonts found'
-    rng = random.Random(int(sys.argv[2]) if len(sys.argv) > 2 else 4)
-    doodles = {'sketch': [], 'scribble': []}
-    for d in json.loads((HERE / 'doodles.json').read_text()):
-        doodles[d['kind']].append(d)
+
+
+def load_geo() -> dict:
+    """Render every template page and locate where students write.
+
+    Returns:
+        geo (dict): (page, version) -> {tpl, shape, bands, origin?, work?,
+            q?, wrong?}; tpl (np.array) is the (H, W) template ink, bands
+            and origin as from free_bands and origin, work, q and wrong
+            the page's WORK, question digit and WRONG key
+    """
     geo = {}
     for (page, version), (pdf, k) in TEMPLATE.items():
         tpl = render_template(TEMPLATES / pdf, k)
-        g = {'tpl': tpl, 'shape': tpl.shape, 'bands': free_bands(tpl)}
+        # the scratch box's side rules run inside the default columns
+        cols = (0.15, 0.85) if page == 'ref' else (0.1, 0.9)
+        g = {'tpl': tpl, 'shape': tpl.shape,
+             'bands': free_bands(tpl, cols=cols)}
         if page in AXES:
             g['origin'] = origin(tpl)
-        if page != 'cover':
+        if (page, version) in WORK:
             g |= {'work': WORK[(page, version)], 'q': page[1],
                   'wrong': page}
         geo[(page, version)] = g
-    blank = np.zeros(geo[('q1', 'a')]['shape'])
+    return geo
 
+
+def sheet_kinds(n: int, flip: set, rng: random.Random) -> dict:
+    """Pick one skewed and one dark sheet among the n not in flip.
+
+    Returns:
+        kinds (dict): sheet index -> 'skewed' or 'dark'
+    """
+    odd = rng.sample([k for k in range(n) if k not in flip], 2)
+    return {odd[0]: 'skewed', odd[1]: 'dark'}
+
+
+def scan_sheet(sides: list, kind: str, flipped: bool,
+               rng: random.Random) -> list:
+    """Scan both sides of one sheet, in feed order.
+
+    Args:
+        sides (list): (front, back) ink, each (H, W) in [0, 1]
+        kind (str): normal, skewed or dark, for both sides
+        flipped (bool): fed back-first
+
+    Returns:
+        pair (list): two 8-bit gray Image.Image scans
+    """
+    skew = 0.0
+    if kind == 'skewed':
+        skew = rng.choice([-1, 1]) * rng.uniform(1.5, 2)
+    pair = [scan(ink, rng, kind, skew) for ink in sides]
+    return pair[::-1] if flipped else pair
+
+
+def one_sided(fonts: list, geo: dict, doodles: dict) -> tuple:
+    """Fake the one-sided stack: every back is unprinted.
+
+    24 students. Defects: a missing Q2 sheet, a Q3 copy missing its
+    continuation sheet, two sheets fed back-first, work continued on some
+    backs, one skewed and one dark sheet.
+
+    Returns:
+        pages (list): Image.Image scans in stack order
+        key (list): one row per sheet, see the module docstring
+    """
+    rng = random.Random(SEED['one_sided'])
+    blank = np.zeros(geo[('q1', 'a')]['shape'])
     students = list(zip(NAMES, ['a', 'b'] * (len(NAMES) // 2)))
     rng.shuffle(students)
-    sheets = [(n, v, p) for n, v in students for p in PAGES]
+    sheets = [(n, v, f) for n, v in students for f, _ in SHEETS['one_sided']]
     # one student lost their Q2 sheet, another Q3's continuation page
     sheets.remove((*students[5], 'q2'))
     sheets.remove((*students[11], 'q3p2'))
     flip = set(rng.sample(range(len(sheets)), 2))
-    odd = rng.sample([k for k in range(len(sheets)) if k not in flip], 2)
-    kinds = {odd[0]: 'skewed', odd[1]: 'dark'}
+    kinds = sheet_kinds(len(sheets), flip, rng)
 
     hands = {n: Hand(fonts, rng) for n, _ in students}
     ids = {n: f'00{rng.randint(1000000, 9999999)}' for n, _ in students}
@@ -663,32 +754,86 @@ def main():
     for k, (name, version, page) in enumerate(sheets):
         g = geo[(page, version)]
         on_back = page != 'cover' and rng.random() < 0.3
-        front = np.maximum(g['tpl'], fill(page, version, hands[name], name,
-                                          ids[name], g, doodles, on_back,
-                                          rng))
+        front = np.maximum(g['tpl'], fill(
+            page, version, hands[name], name, ids[name], g, doodles,
+            'see back' if on_back else None, rng))
         back = blank
         if on_back:
             back = fill('back', version, hands[name], name, ids[name], g,
-                        doodles, False, rng)
+                        doodles, None, rng)
         kind = kinds.get(k, 'normal')
-        skew = 0.0
-        if kind == 'skewed':
-            skew = rng.choice([-1, 1]) * rng.uniform(1.5, 2)
-        pair = [scan(front, rng, kind, skew), scan(back, rng, kind, skew)]
-        if k in flip:
-            pair.reverse()
-        pages += pair
-        key.append([k + 1, name, version, page, int(k in flip),
-                    int(on_back), kind])
+        pages += scan_sheet([front, back], kind, k in flip, rng)
+        key.append([k + 1, name, version, page,
+                    'work' if on_back else 'blank', int(k in flip), kind])
+    return pages, key
 
-    pages[0].save(OUT / 'demo_scans.pdf', 'PDF', save_all=True,
-                  append_images=pages[1:], resolution=DPI, quality=50)
-    with open(OUT / 'demo_key.csv', 'w', newline='') as f:
-        w = csv.writer(f)
-        w.writerow(['sheet', 'student', 'version', 'page', 'flipped',
-                    'back_work', 'scan'])
-        w.writerows(key)
-    print(f'{len(sheets)} sheets, {len(pages)} pages -> demo_scans.pdf')
+
+def double_sided(fonts: list, geo: dict, doodles: dict) -> tuple:
+    """Fake the double-sided stack: both sides of every sheet are printed.
+
+    16 students, none from the one-sided stack. Defects: a missing Q1 / Q2
+    sheet, a Q3 sheet and one other fed back-first, work continued in the
+    scratch box on the cover's back, one skewed and one dark sheet.
+
+    Returns:
+        pages (list): Image.Image scans in stack order
+        key (list): one row per sheet, see the module docstring
+    """
+    rng = random.Random(SEED['double_sided'])
+    students = list(zip(NAMES_2, ['a', 'b'] * (len(NAMES_2) // 2)))
+    rng.shuffle(students)
+    sheets = [(n, v, f, b) for n, v in students
+              for f, b in SHEETS['double_sided']]
+    # one student lost their Q1 / Q2 sheet
+    sheets.remove((*students[5], 'q1', 'q2'))
+    # Q3's two pages share a sheet, so no sheet loss leaves an incomplete
+    # copy; a Q3 sheet fed back-first does, as its p2 then precedes p1
+    q3 = [k for k, s in enumerate(sheets) if s[2] == 'q3p1']
+    flip = {rng.choice(q3),
+            rng.choice([k for k in range(len(sheets)) if k not in q3])}
+    kinds = sheet_kinds(len(sheets), flip, rng)
+
+    hands = {n: Hand(fonts, rng) for n, _ in students}
+    ids = {n: f'00{rng.randint(1000000, 9999999)}' for n, _ in students}
+    # the question, if any, whose work a student continues in the scratch
+    # box on the cover's back
+    over = {n: rng.choice(PAGES[1:]) if rng.random() < 0.35 else None
+            for n, _ in students}
+    pages, key = [], []
+    for k, (name, version, *sides) in enumerate(sheets):
+        ink = []
+        for page in sides:
+            g = geo[(page, version)]
+            if page == 'ref':
+                g = g | {'cont': over[name] and geo[(over[name], version)]}
+            note = 'see scratch' if over[name] == page else None
+            ink.append(np.maximum(g['tpl'], fill(
+                page, version, hands[name], name, ids[name], g, doodles,
+                note, rng)))
+        kind = kinds.get(k, 'normal')
+        pages += scan_sheet(ink, kind, k in flip, rng)
+        key.append([k + 1, name, version, *sides, int(k in flip), kind])
+    return pages, key
+
+
+def main():
+    fonts = sorted(pathlib.Path(sys.argv[1]).glob('*.ttf'))
+    assert fonts, 'no .ttf handwriting fonts found'
+    doodles = {'sketch': [], 'scribble': []}
+    for d in json.loads((HERE / 'doodles.json').read_text()):
+        doodles[d['kind']].append(d)
+    geo = load_geo()
+    make = {'one_sided': one_sided, 'double_sided': double_sided}
+    for stack in sys.argv[2:] or make:
+        pages, key = make[stack](fonts, geo, doodles)
+        pages[0].save(OUT / f'{stack}_scans.pdf', 'PDF', save_all=True,
+                      append_images=pages[1:], resolution=DPI, quality=50)
+        with open(OUT / f'{stack}_key.csv', 'w', newline='') as f:
+            w = csv.writer(f)
+            w.writerow(['sheet', 'student', 'version', 'front', 'back',
+                        'flipped', 'scan'])
+            w.writerows(key)
+        print(f'{len(key)} sheets, {len(pages)} pages -> {stack}_scans.pdf')
 
 
 if __name__ == '__main__':

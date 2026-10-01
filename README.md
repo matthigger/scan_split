@@ -9,7 +9,7 @@ The page learns the layout from the scans themselves (no template, header, or pa
 A part is one or more pages bound for one output (a question, even one spanning pages); a copy is one student's pages of it.
 Optionally add page templates (the blank exam: one PDF of the whole exam, or one PDF per question): each sheet is then sorted to its closest template page, and any group of sheets no template matches is set aside as its own part.
 Several template PDFs make a part each, named after the file; a single PDF makes a part per page, which you staple into multi-page parts on the page.
-New users can click **load example** to try a fictional quiz stack (`demo/`).
+New users can try an example quiz (`demo/`), printed one-sided (blank backs scanned) or double-sided (questions on backs).
 Exports copy the original scanned pages, so quality and file size are unchanged.
 Nothing is uploaded; PDFs stay on your machine.
 
@@ -42,7 +42,7 @@ Re-routing any sheet of a multi-page copy moves the whole copy.
 - `js/pipeline.js`: matching (port of `proto/validate.py`)
 - `vendor/`: pdf.js 4.10.38 and pdf-lib 1.17.1, served locally
 - `proto/make_test_set.py`: shuffle scans into one test stack plus its expected sorted outputs (needs pypdf)
-- `demo/`: the example: fictional DEMO 101 templates in two versions, with a two-page Q3 (`src/page.tex`, `src/build.sh`), and a fake scanned stack of 24 students with generated handwriting (`src/make_scans.py`, needs handwriting .ttf fonts from Google Fonts, OFL or Apache 2.0, listed in its docstring); doodles come from the Quick, Draw! Dataset by Google, CC BY 4.0 (`src/doodles.json`, fetched by `src/fetch_doodles.py`); `demo_key.csv` is its answer key
+- `demo/`: the examples: two fake scanned stacks of a fictional DEMO 101 quiz in two versions with a two-page Q3, printed one-sided (24 students) and double-sided (16 students), with generated handwriting (`src/make_scans.py`, needs handwriting .ttf fonts from Google Fonts, OFL or Apache 2.0, listed in its docstring); `*_key.csv` are their answer keys; `templates/` are the blank pages they are generated from (`src/page.tex`, `src/build.sh`); doodles come from the Quick, Draw! Dataset by Google, CC BY 4.0 (`src/doodles.json`, fetched by `src/fetch_doodles.py`)
 
 Keep scans out of this repo: `test/` is git-ignored because real scans carry student names and IDs.
 
@@ -52,4 +52,4 @@ Keep scans out of this repo: `test/` is git-ignored because real scans carry stu
 python3 -m http.server 8000
 ```
 
-Then open `http://localhost:8000/?src=test/a.pdf,test/b.pdf` to load local files by URL instead of dropping them; `&tpl=a.pdf,b.pdf` loads templates the same way, and `?example=templates` (or `scans`) loads the example.
+Then open `http://localhost:8000/?src=test/a.pdf,test/b.pdf` to load local files by URL instead of dropping them; `&tpl=a.pdf,b.pdf` loads templates the same way, and `?example=one-sided` (or `double-sided`) loads an example.
