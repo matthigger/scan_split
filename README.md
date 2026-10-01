@@ -5,8 +5,10 @@ Sort scanned exam pages into one PDF per question, in the browser.
 **Use it:** https://matthigger.github.io/scan_split/
 
 Drop in the scanner's PDFs.
-The page learns the layout from the scans themselves (no template, header, or page count to configure), groups pages into page types, and lets you route each type, or any single sheet, to a named output PDF or discard it.
-Optionally add page templates (the blank exam pages, one PDF per page or per question): each sheet is then sorted to its closest template and named after it, and any group of sheets no template matches is set aside as its own type.
+The page learns the layout from the scans themselves (no template, header, or page count to configure), groups pages into parts, and lets you route each part, or any single copy, to a named output PDF or discard it.
+A part is one or more pages bound for one output (a question, even one spanning pages); a copy is one student's pages of it.
+Optionally add page templates (the blank exam: one PDF of the whole exam, or one PDF per question): each sheet is then sorted to its closest template page, and any group of sheets no template matches is set aside as its own part.
+Several template PDFs make a part each, named after the file; a single PDF makes a part per page, which you join into parts on the page.
 New users can click **load example** to try a fictional quiz stack (`demo/`).
 Exports copy the original scanned pages, so quality and file size are unchanged.
 Nothing is uploaded; PDFs stay on your machine.
@@ -15,19 +17,23 @@ Nothing is uploaded; PDFs stay on your machine.
 
 1. Each page is rendered small, inverted, blurred, high-passed (removes paper tint and scanner shading) and normalized; two pages' similarity is the dot product (normalized cross-correlation).
 2. Near-empty pages are marked blank.
-   When the scanner also captured each sheet's (blank or written-on) back, consecutive pages pair into sheets; a sheet's front is the side with near-copies elsewhere in the stack, and the back always travels with it, even when a sheet was fed back-first.
-3. Fronts are clustered into page types by bisecting k-means, splitting while the two halves' average images differ.
-   Handwriting averages out, so each type's average is a clean picture of the printed page.
-   Each sheet then goes to its closest type, allowing a few mm of scanner offset.
-   The splits form a tree built once: the default types stop where a split would only separate handwriting, and each type card can split further or merge back without resetting any routing.
+   In blank-back mode (detected when at least half of each file's page pairs 1-2, 3-4, … have a blank side; settable by hand) the scanner also captured each sheet's blank back, so consecutive pages pair into sheets: the front is the side with ink, and the back travels with it, even when a sheet was fed back-first.
+   With blank-back mode off (backs carry questions or work), every page stands alone.
+3. Fronts are clustered into layouts, one per printed page, by bisecting k-means, splitting while the two halves' average images differ.
+   Handwriting averages out, so each layout's average is a clean picture of the printed page.
+   Each sheet then goes to its closest layout, allowing a few mm of scanner offset.
+   The splits form a tree built once: the default layouts stop where a split would only separate handwriting, and each one-page part's card can split further or merge back without resetting any routing.
+4. Parts start as one layout each (or one template file each) and can be joined into multi-page parts and separated again.
+   A multi-page part's pages are assumed contiguous in the input: the stack is cut into copies, runs of consecutive sheets stepping through the part's pages in order (blank sheets skipped), and a run that breaks off or starts mid-part is flagged as an incomplete copy.
+   Joined pages take the templates' order, or else the order in which they most often follow each other in the stack; parts that never sit next to each other cannot be joined.
    The comparison grid is fine enough to separate versions of one question that differ only in wording and numbers (quiz a vs b).
 
 With templates, each sheet goes to its nearest template; within a template's sheets, a group (a genuine split of the same tree) whose average matches the template poorly, or clearly worse than the template's best group, is set aside, and set-aside sheets are grouped by their own tree.
 
-A question spanning several pages works too: route all of its page types to one output.
-Outputs keep the stack order, so a stack of per-student runs (student A's question pages, then student B's, …) exports as the same contiguous runs, even when a student's other questions are elsewhere in the stack.
+Outputs keep the stack order, so each copy exports as a contiguous run (student A's pages of the part, then student B's, …), even when a student's other questions are elsewhere in the stack.
+Re-routing any sheet of a multi-page copy moves the whole copy.
 
-`proto/validate.py` is the reference implementation and its validation on real scans (shuffled sheets, flipped sheets, missing sheets, simulated colored paper).
+`proto/validate.py` is the reference implementation (its duplex test is broader than blank-back mode) and its validation on real scans (shuffled sheets, flipped sheets, missing sheets, simulated colored paper).
 
 ## Files
 

@@ -13,6 +13,9 @@
   <h1>scan_split</h1>
   <p class="sub">Sort scanned exam pages into one PDF per question.
     Everything runs in your browser; PDFs are never uploaded.</p>
+  <p class="hint example">New here? Try a fictional quiz stack of 24 made-up students:
+    <button class="link" id="demo-tpl">with templates</button> ·
+    <button class="link" id="demo-scans">scans only</button></p>
 </header>
 
 <main>
@@ -22,17 +25,13 @@
         <label class="btn">choose files
           <input type="file" id="file" accept="application/pdf,.pdf" multiple hidden>
         </label></p>
-      <p class="hint">Files are stacked in name order. Page layout, page count
-        and headers are learned from the scans; nothing needs to be set up.</p>
-      <p class="hint">New here? Try a fictional quiz stack (24 made-up students):
-        <button class="btn small" id="demo-tpl">load example</button>
-        <button class="btn ghost small" id="demo-scans">example without templates</button></p>
     </div>
     <ul id="files"></ul>
     <div id="tpl-drop" class="tpl-row">
-      <div><strong>Page templates</strong> <span class="hint">(optional) blank PDFs of the
-        exam pages, e.g. one per question. Each sheet is sorted to its closest
-        template, and the template's file name names its output.</span></div>
+      <div><strong>Page templates</strong> <span class="hint">(optional) the blank exam:
+        one PDF of the whole exam, or one PDF per question. Each sheet is sorted to
+        its closest template page. Several PDFs make a part each, named after the
+        file; a single PDF makes a part per page, which you can join below.</span></div>
       <div class="tpl-actions">
         <label class="btn ghost small">add templates
           <input type="file" id="tpl-file" accept="application/pdf,.pdf" multiple hidden></label>
@@ -49,16 +48,18 @@
 
   <section id="summary" class="card" hidden></section>
 
-  <section id="types" hidden>
-    <div class="h-row"><h2>Page types</h2>
-      <button class="btn ghost small" id="reset-types">reset to automatic</button></div>
-    <p class="hint" id="types-hint">Each card is the average of every sheet of that type
-      (handwriting fades out, the printed page remains); the magnifier shows it
-      large. A type's name is its output file. Split a type that hides two
-      versions, merge to undo; names and routing are kept either way. Backs
-      always travel with their front.</p>
-    <p class="hint" id="types-unused" hidden></p>
-    <div id="type-cards" class="type-grid"></div>
+  <section id="parts" hidden>
+    <div class="h-row"><h2>Parts</h2>
+      <button class="btn ghost small" id="reset-parts">reset to automatic</button></div>
+    <p class="hint" id="parts-hint"></p>
+    <p class="note"><b>Multi-page parts.</b> A part is one or more pages that go
+      to one output, e.g. a question spanning two pages; a copy is one student's
+      pages of it. Use <i>join with…</i> to combine parts. A multi-page part's
+      pages are assumed to be contiguous in the scanned input: each copy's pages
+      in a row (blank sheets aside), in the same order every time. Runs that break
+      off or start mid-part are flagged as incomplete copies.</p>
+    <p class="hint" id="parts-unused" hidden></p>
+    <div id="part-cards" class="part-grid"></div>
   </section>
 
 
@@ -70,7 +71,8 @@
   <section id="review" hidden>
     <h2>Review</h2>
     <p class="hint">Click to select (shift-click for a range), then re-route
-      the selection. Double-click or &#10530; to inspect a sheet.</p>
+      the selection; a multi-page part's copy moves as one. Double-click or
+      &#10530; to inspect a sheet.</p>
     <div id="filters" class="chips"></div>
     <div id="bulk" class="bulk" hidden></div>
     <div id="grid" class="grid"></div>
@@ -121,7 +123,7 @@
   </div>
   <div class="pv-foot">
     <button id="pv-prev" class="btn ghost">&larr; prev</button>
-    <label>Send to <select id="pv-dest"></select></label>
+    <label><span id="pv-dest-label">Send to</span> <select id="pv-dest"></select></label>
     <button id="pv-swap" class="btn ghost">swap front / back</button>
     <button id="pv-next" class="btn ghost">next &rarr;</button>
   </div>

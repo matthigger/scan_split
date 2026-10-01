@@ -1,8 +1,12 @@
 /**
- * Page-matching pipeline: features, blank pages, sheets, page types.
+ * Page-matching pipeline: features, blank pages, sheets, layouts.
  *
  * Port of proto/validate.py (see its docstring for the method and the
- * validation). Pure functions on Float32Array; no DOM.
+ * validation), except blank-back detection, which is narrower than its
+ * duplex test. Pure functions on Float32Array; no DOM.
+ *
+ * A layout is one printed page (a cluster of sheet fronts); the UI groups
+ * layouts into parts of one or more pages.
  *
  * Shapes: a page feature is (d,) with d = GRID_W * GRID_H, unit norm, or
  * null for a blank page. S is the (N, N) all-pairs NCC matrix, row-major.
@@ -144,35 +148,25 @@ export function simMatrix(F) {
 }
 
 /**
- * Compute mean NCC between pages k apart, k = 1..maxLag.
- * @returns {number[]} (maxLag,)
- */
-export function lagSim(S, n, maxLag = 12) {
-  const out = [];
-  for (let k = 1; k <= maxLag; k++) {
-    let s = 0;
-    for (let i = 0; i + k < n; i++) s += S[i * n + i + k];
-    out.push(n > k ? s / (n - k) : 0);
-  }
-  return out;
-}
-
-/**
- * Decide whether each sheet's back was scanned too (pages pair up).
+ * Decide whether the stack is in blank-back mode: each sheet's (mostly
+ * blank) back scanned right after its front.
  *
- * Either blank pages sit on one parity of each file's pages (blank backs),
- * or pages 2 apart match far better than neighbours (every front alike).
+ * Pairs each file's pages 1-2, 3-4, ...; blank-back when at least half the
+ * pairs have a blank side. Backs carrying questions or work fail this; such
+ * stacks are read page by page, unpaired.
  *
- * @param {number[]} lag from lagSim
  * @param {boolean[]} blank (N,) per page
  * @param {number[]} pos (N,) each page's index within its file
  */
-export function isDuplex(lag, blank, pos) {
-  const n = [0, 0];
-  const b = [0, 0];
-  pos.forEach((p, i) => { n[p % 2]++; b[p % 2] += blank[i]; });
-  const gap = n[0] && n[1] ? Math.abs(b[0] / n[0] - b[1] / n[1]) : 0;
-  return gap > 0.3 || lag[1] > 3 * Math.max(lag[0], 0.02);
+export function hasBlankBacks(blank, pos, frac = 0.5) {
+  let pairs = 0;
+  let withBlank = 0;
+  for (let i = 0; i + 1 < pos.length; i++) {
+    if (pos[i] % 2 || pos[i + 1] !== pos[i] + 1) continue;
+    pairs++;
+    withBlank += blank[i] || blank[i + 1];
+  }
+  return pairs > 0 && withBlank >= frac * pairs;
 }
 
 /**
@@ -323,7 +317,7 @@ function twoMeans(F, idx, S, n, nIter = 20) {
 const CLOSE = 0.1;
 
 /**
- * Lazily built bisection tree of pages; page types are a cut through it.
+ * Lazily built bisection tree of pages; layouts are a cut through it.
  *
  * Each node holds a set of pages and their consensus. A node's children
  * split it by spherical 2-means, computed on first request and then fixed,
@@ -337,7 +331,7 @@ const CLOSE = 0.1;
  * that cannot split (one page, or identical pages), first is the earliest
  * member in the stack.
  */
-export class TypeTree {
+export class LayoutTree {
   /**
    * @param {Float32Array[]} F features by page index
    * @param {number[]} idx page indices to organize, none blank, non-empty
@@ -388,7 +382,7 @@ export class TypeTree {
    * Cut the tree where a split would only separate handwriting.
    *
    * Splits leaving fewer than minSize pages on a side are outliers, not a
-   * page type; they stay available to split by hand.
+   * layout; they stay available to split by hand.
    */
   autoCut(splitNcc = 0.8, node = this.root) {
     const kids = this.children(node);
@@ -414,14 +408,14 @@ export function argmax(xs) {
 }
 
 /**
- * Estimate exam length (in sheets) from the sheet-type sequence.
+ * Estimate exam length (in sheets) from the sheet-layout sequence.
  *
  * Picks the smallest lag whose label agreement is within 90% of the best,
  * so multiples of the true period are not preferred; window is the most
  * common run of that many labels, phased from the stack start (a stack
  * starts on an exam's first sheet).
  *
- * @param {number[]} labels (n,) type per sheet in stack order
+ * @param {number[]} labels (n,) layout per sheet in stack order
  * @returns {{p: number, agree: number, window: number[]}}
  */
 export function period(labels, maxP = 8) {

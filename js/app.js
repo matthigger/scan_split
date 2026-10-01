@@ -1,15 +1,18 @@
 /**
- * scan_split UI: load scanned PDFs, match pages, route sheets, export.
+ * scan_split UI: load scanned PDFs, match pages, route copies, export.
  *
- * Flow: render every page small (pdf.js) -> features (pipeline.js) -> page
- * types, either a cut through a type tree learned from the scans (the user
- * moves it by splitting or merging) or, when page templates are loaded, one
- * type per template plus any groups no template matches -> types, and
- * single sheets, are routed to named outputs or discarded -> export copies
- * the original pages (pdf-lib), so scan quality is untouched.
+ * Flow: render every page small (pdf.js) -> features (pipeline.js) ->
+ * layouts, one per printed page: a cut through a layout tree learned from
+ * the scans (the user moves it by splitting or merging) or, when page
+ * templates are loaded, one per template page plus any groups no template
+ * matches -> parts, each one or more layouts in page order (the user joins
+ * and separates them) -> copies: runs of consecutive sheets stepping
+ * through a part's pages, one per student -> parts, and single copies, are
+ * routed to named outputs or discarded -> export copies the original pages
+ * (pdf-lib), so scan quality is untouched.
  *
- * A sheet is {front, back} page indices; back is null when the stack has
- * no scanned backs (the pairing setting, labelled "blank backs scanned").
+ * A sheet is {front, back} page indices; back is null unless the stack is
+ * in blank-back mode (each sheet's blank back scanned after its front).
  * Loading ?src=a.pdf,b.pdf fetches those URLs instead of waiting for a drop.
  */
 import * as pdfjsLib from '../vendor/pdf.min.mjs';
@@ -27,7 +30,9 @@ const HI_W = 800;
 const HI_N = 10;
 const COLORS = ['#3b73d9', '#e0762b', '#3f9d58', '#d64550', '#8a5cc7',
   '#1f9e9e', '#c49a1a', '#d45fa6', '#7a6a58', '#5d7a8c'];
+// layout of a blank sheet, and the part holding blank sheets
 const BLANK = -1;
+const BLANK_PART = 'blank';
 const DISCARD = 'discard';
 const LOW_MARGIN = 0.1;
 const AUTO_SPLIT = 0.8;
@@ -55,28 +60,36 @@ const state = {
   files: [],
   // {file, idx, thumb, v, energy, ink, blank}
   pages: [],
-  // {front, back, type, margin, flipped, dest}; dest null = type default
+  // {front, back, layout, margin, flipped, dest, part, copy, page}; layout
+  // is the id of the shown layout holding the front, or BLANK; dest null =
+  // the part's default; copy indexes state.copies (-1 for a blank sheet)
+  // and page is the sheet's place in its part
   sheets: [],
-  // P.TypeTree over non-blank sheet fronts, or null (also with templates)
+  // P.LayoutTree over non-blank sheet fronts, or null (also with templates)
   tree: null,
-  // {name, file, idx, v, thumb}: blank page templates to sort against
+  // {name, stem, file, idx, v, thumb}: blank page templates to sort against
   templates: [],
-  // tree nodes currently shown as page types, in display order
-  cut: [],
-  // node id -> {id, label, color, out, dest}; out is the node's own output,
-  // dest where its sheets go; kept when a node leaves the cut
+  // the shown parts in display order, each an array of its layout nodes
+  // (tree nodes, or template and stray nodes) in page order; together they
+  // hold every shown layout once
+  groups: [],
+  // part key (keyOf) -> {id, label, color, out, dest}; out is the part's
+  // own output, dest where its copies go; kept when the part is undone
   meta: new Map(),
-  blankMeta: { id: BLANK, label: 'Blank', color: '#9a9aa2', dest: DISCARD },
-  // shown types: meta entries plus {node, n, img}
-  types: [],
-  // {id, name, node?}; node set for a type's own output, unset for one
+  blankMeta: { id: BLANK_PART, label: 'Blank', color: '#9a9aa2', dest: DISCARD },
+  // shown parts: meta entries plus {nodes, imgs, n, nIncomplete, nSheets};
+  // n and nIncomplete count complete and incomplete copies
+  parts: [],
+  // {part, start, next, sheets, complete}: a run of consecutive sheets
+  // holding a part's pages start .. next - 1, in stack order
+  copies: [],
+  // {id, name, part?}; part set for a part's own output, unset for one
   // made with "+ new output"
   outputs: [],
   S: null,
-  lag: null,
   typ: null,
-  duplexAuto: false,
-  duplexMode: 'auto',
+  blankBackAuto: false,
+  blankBackMode: 'auto',
   period: null,
   selected: new Set(),
   anchor: null,
@@ -173,33 +186,40 @@ function analyze() {
   const blank = P.blankMask(Float32Array.from(pages, (p) => p.energy));
   pages.forEach((p, i) => { p.blank = blank[i]; });
   state.S = P.simMatrix(pages.map((p) => (p.blank ? null : p.v)));
-  state.lag = P.lagSim(state.S, pages.length);
-  state.duplexAuto = P.isDuplex(state.lag, pages.map((p) => p.blank), pages.map((p) => p.idx));
+  state.blankBackAuto = P.hasBlankBacks(pages.map((p) => p.blank), pages.map((p) => p.idx));
   state.typ = P.typicality(state.S, pages.length);
   cluster();
 }
 
-const isDuplex = () => (state.duplexMode === 'auto'
-  ? state.duplexAuto : state.duplexMode === 'duplex');
+const blankBacks = () => (state.blankBackMode === 'auto'
+  ? state.blankBackAuto : state.blankBackMode === 'on');
 
-/** Pair pages into sheets (within each file) and pick each front. */
+/**
+ * Make sheets from pages: in blank-back mode each page and the one after it
+ * (within a file) form a sheet; otherwise every page stands alone.
+ */
 function buildSheets() {
   const sheets = [];
-  if (isDuplex()) {
+  if (blankBacks()) {
     for (const f of state.files) {
       for (let i = 0; i < f.nPages; i += 2) {
         const a = f.start + i;
         const b = i + 1 < f.nPages ? a + 1 : null;
-        // the front is the side that best matches a template or, without
+        // the front is the side with ink; when both have some (work on the
+        // back), the side that best matches a template or, without
         // templates, the side with near-copies elsewhere in the stack
-        const flip = b !== null && frontScore(b) > frontScore(a);
+        let flip = false;
+        if (b !== null) {
+          const [ba, bb] = [state.pages[a].blank, state.pages[b].blank];
+          flip = ba !== bb ? ba : frontScore(b) > frontScore(a);
+        }
         sheets.push({ front: flip ? b : a, back: flip ? a : b, flipped: flip });
       }
     }
   } else {
     state.pages.forEach((_, i) => sheets.push({ front: i, back: null, flipped: false }));
   }
-  state.sheets = sheets.map((s) => ({ ...s, type: BLANK, margin: 1, dest: null }));
+  state.sheets = sheets.map((s) => ({ ...s, layout: BLANK, margin: 1, dest: null }));
 }
 
 function frontScore(i) {
@@ -208,13 +228,13 @@ function frontScore(i) {
   return p.blank ? 0 : Math.max(...state.templates.map((t) => P.dot(p.v, t.v)));
 }
 
-/** Pair sheets and find page types, from templates or a learned tree. */
+/** Pair sheets and find layouts and parts, from templates or a learned tree. */
 function cluster() {
   buildSheets();
   const pages = state.pages;
   const idx = state.sheets.filter((s) => !pages[s.front].blank).map((s) => s.front);
   state.tree = idx.length && !state.templates.length
-    ? new P.TypeTree(pages.map((p) => p.v), idx, state.S, pages.length) : null;
+    ? new P.LayoutTree(pages.map((p) => p.v), idx, state.S, pages.length) : null;
   state.meta.clear();
   state.outputs = [];
   state.imgCache.clear();
@@ -259,7 +279,7 @@ function templateCut(idx) {
   state.tplLeaves = [];
   groups.forEach((mem, k) => {
     if (!mem.length) return;
-    const tree = new P.TypeTree(F, mem, state.S, pages.length);
+    const tree = new P.LayoutTree(F, mem, state.S, pages.length);
     const leaves = [];
     const walk = (node) => {
       const kids = node.members.length >= 2 * MIN_JUDGE ? tree.children(node) : null;
@@ -282,7 +302,7 @@ function templateCut(idx) {
   }));
   let strayNodes = [];
   if (aside.size) {
-    const tree = new P.TypeTree(F, [...aside], state.S, pages.length);
+    const tree = new P.LayoutTree(F, [...aside], state.S, pages.length);
     strayNodes = tree.autoCut(AUTO_SPLIT).map((n, j) => ({
       id: STRAY_BASE + j, members: n.members, cons: n.cons }));
   }
@@ -292,27 +312,38 @@ function templateCut(idx) {
     n.children = null;
     n.first = n.members.length ? Math.min(...n.members) : Infinity;
   }
+  // a part per template file (a PDF per question) or, from a single file
+  // (the whole exam), a part per page, for the user to join
+  const byFile = new Set(T.map((t) => t.file)).size > 1;
+  state.groups = [];
+  for (const n of tplNodes) {
+    const last = state.groups.at(-1);
+    if (byFile && last && last[0].template.file === n.template.file) last.push(n);
+    else state.groups.push([n]);
+  }
+  for (const n of strayNodes) state.groups.push([n]);
   let k = 0;
-  for (const n of cut) {
-    if (n.template) {
-      // templates nothing matched get no letter; their cards are hidden
-      const label = n.members.length ? letter(k++) : '';
-      newMeta(n, label, COLORS[(k + COLORS.length - 1) % COLORS.length], n.template.name);
+  for (const g of state.groups) {
+    if (g[0].template) {
+      // parts nothing matched get no letter; their cards are hidden
+      const label = g.some((n) => n.members.length) ? letter(k++) : '';
+      newMeta(g, label, COLORS[(k + COLORS.length - 1) % COLORS.length],
+        g.length > 1 ? g[0].template.stem : g[0].template.name);
     } else {
-      const j = n.id - STRAY_BASE + 1;
-      newMeta(n, `?${j}`, '#8d8d94', `no_template_${j}`);
+      const j = g[0].id - STRAY_BASE + 1;
+      newMeta(g, `?${j}`, '#8d8d94', `no_template_${j}`);
     }
   }
-  state.cut = cut;
   assign();
 }
 
-/** Show the tree's automatic cut; keeps names and per-sheet routing. */
+/** Show the tree's automatic cut as one-page parts; keeps names and per-sheet routing. */
 function autoCut() {
-  state.cut = state.tree ? state.tree.autoCut(AUTO_SPLIT) : [];
-  state.cut.forEach((node, k) => {
-    const m = state.meta.get(node.id) ??
-      newMeta(node, letter(k), COLORS[k % COLORS.length], `type_${letter(k)}`);
+  const cut = state.tree ? state.tree.autoCut(AUTO_SPLIT) : [];
+  state.groups = cut.map((n) => [n]);
+  cut.forEach((node, k) => {
+    const m = state.meta.get(keyOf([node])) ??
+      newMeta([node], letter(k), COLORS[k % COLORS.length], `part_${letter(k)}`);
     m.dest = m.out;
     // look ahead so each card knows whether it can split
     state.tree.children(node);
@@ -320,44 +351,98 @@ function autoCut() {
   assign();
 }
 
-/** Create a node's display entry and its own output, routed there. */
-function newMeta(node, label, color, name, discard = false) {
-  const out = { id: `n${node.id}`, name, node: node.id };
+/** Key a part by its layouts, in page order. */
+const keyOf = (nodes) => nodes.map((n) => n.id).join('+');
+
+/** Create a part's display entry and its own output, routed there. */
+function newMeta(nodes, label, color, name, discard = false) {
+  const key = keyOf(nodes);
+  const out = { id: `n${key}`, name, part: key };
   state.outputs.push(out);
-  const m = { id: node.id, label, color, out: out.id, dest: discard ? DISCARD : out.id };
-  state.meta.set(node.id, m);
+  const m = { id: key, label, color, out: out.id, dest: discard ? DISCARD : out.id };
+  state.meta.set(key, m);
   return m;
 }
 
 const letter = (k) => (k < 26 ? String.fromCharCode(65 + k) : `T${k}`);
 
-/** Give each sheet the shown type holding its front, and a match margin. */
+/**
+ * Give each sheet the shown layout holding its front and a match margin,
+ * then gather the parts and cut the stack into copies.
+ */
 function assign() {
   const pages = state.pages;
+  const cut = state.groups.flat();
   const owner = new Map();
-  for (const node of state.cut) for (const p of node.members) owner.set(p, node);
+  for (const node of cut) for (const p of node.members) owner.set(p, node);
   for (const s of state.sheets) {
     const node = owner.get(s.front);
-    if (!node) { s.type = BLANK; s.margin = 1; continue; }
-    s.type = node.id;
+    if (!node) { s.layout = BLANK; s.margin = 1; continue; }
+    s.layout = node.id;
     const v = pages[s.front].v;
-    const others = state.cut.filter((m) => m !== node);
+    const others = cut.filter((m) => m !== node);
     if (!others.length) { s.margin = P.dot(v, node.cons); continue; }
     s.margin = P.dot(v, node.cons) - Math.max(...others.map((m) => P.dot(v, m.cons)));
     if (s.margin < LOW_MARGIN) {
       s.margin = P.shiftDot(v, node.cons) - Math.max(...others.map((m) => P.shiftDot(v, m.cons)));
     }
   }
-  state.types = state.cut.map((node) => Object.assign(state.meta.get(node.id), {
-    node, n: node.members.length, img: node.template ? node.template.thumb : nodeImage(node),
+  state.parts = state.groups.map((nodes) => Object.assign(state.meta.get(keyOf(nodes)), {
+    nodes, imgs: nodes.map((n) => (n.template ? n.template.thumb : nodeImage(n))),
   }));
-  if (state.sheets.some((s) => s.type === BLANK)) {
-    state.types.push(Object.assign(state.blankMeta, {
-      node: null, n: state.sheets.filter((s) => s.type === BLANK).length,
-      img: consensusImage(state.sheets.filter((s) => s.type === BLANK).map((s) => pages[s.front])),
-    }));
+  const blanks = state.sheets.filter((s) => s.layout === BLANK);
+  if (blanks.length) {
+    state.parts.push(Object.assign(state.blankMeta, {
+      nodes: [], imgs: [consensusImage(blanks.map((s) => pages[s.front]))] }));
   }
-  state.period = P.period(state.sheets.map((s) => s.type));
+  cutCopies();
+  for (const t of state.parts) {
+    const cs = state.copies.filter((c) => c.part === t);
+    t.n = cs.filter((c) => c.complete).length;
+    t.nIncomplete = cs.length - t.n;
+    t.nSheets = state.sheets.filter((s) => s.part === t.id).length;
+  }
+  state.period = P.period(state.sheets.map((s) => s.layout));
+}
+
+/**
+ * Cut the stack into copies: runs of consecutive sheets stepping through a
+ * part's pages in order, one per student.
+ *
+ * Blank sheets between pages are skipped over. A run starting past a
+ * part's first page, or stopping before its last, is an incomplete copy;
+ * in a one-page part every sheet is a complete copy.
+ */
+function cutCopies() {
+  const at = new Map();
+  for (const t of state.parts) t.nodes.forEach((n, j) => at.set(n.id, [t, j]));
+  const copies = [];
+  let open = null;
+  const close = () => {
+    if (!open) return;
+    open.complete = open.start === 0 && open.next === open.part.nodes.length;
+    copies.push(open);
+    open = null;
+  };
+  state.sheets.forEach((s, i) => {
+    s.copy = -1;
+    s.page = 0;
+    if (s.layout === BLANK) { s.part = BLANK_PART; return; }
+    const [t, j] = at.get(s.layout);
+    s.part = t.id;
+    s.page = j;
+    if (!(open && open.part === t && open.next === j)) {
+      close();
+      open = { part: t, start: j, next: j, sheets: [] };
+    }
+    // the index open gets once closed
+    s.copy = copies.length;
+    open.sheets.push(i);
+    open.next++;
+    if (open.next === t.nodes.length) close();
+  });
+  close();
+  state.copies = copies;
 }
 
 function nodeImage(node) {
@@ -402,85 +487,206 @@ function sample(xs, k) {
   return Array.from({ length: k }, (_, i) => xs[Math.floor(i * xs.length / k)]);
 }
 
-/* ---------- split / merge ---------- */
+/* ---------- split / merge / join / separate ---------- */
 
 const node = (id) => state.tree.nodes[id];
+const groupOf = (key) => state.groups.find((g) => keyOf(g) === key);
+const layoutNode = (id) => state.groups.flat().find((n) => n.id === id);
 
 function unusedColor() {
-  const used = new Set(state.cut.map((n) => state.meta.get(n.id).color));
-  return COLORS.find((c) => !used.has(c)) ?? COLORS[state.cut.length % COLORS.length];
+  const used = new Set(state.groups.map((g) => state.meta.get(keyOf(g)).color));
+  return COLORS.find((c) => !used.has(c)) ?? COLORS[state.groups.length % COLORS.length];
 }
 
-/** Replace a shown type by its two children, each with its own output. */
-function splitType(id) {
-  const n = node(id);
-  const kids = state.tree.children(n);
+/** Replace a one-page part by its layout's two children, each a part with its own output. */
+function splitPart(key) {
+  const g = groupOf(key);
+  const kids = state.tree.children(g[0]);
   if (!kids) return;
-  const m = state.meta.get(id);
+  const m = state.meta.get(key);
   kids.forEach((k, j) => {
-    if (!state.meta.has(k.id)) {
-      newMeta(k, `${m.label}.${j + 1}`, j ? unusedColor() : m.color,
+    if (!state.meta.has(keyOf([k]))) {
+      newMeta([k], `${m.label}.${j + 1}`, j ? unusedColor() : m.color,
         `${outputName(m.out)}_${j + 1}`, m.dest === DISCARD);
     }
     state.tree.children(k);
   });
-  state.cut.splice(state.cut.indexOf(n), 1, ...kids);
+  state.groups.splice(state.groups.indexOf(g), 1, ...kids.map((k) => [k]));
   assign();
-  renderTypesAndBelow();
+  renderPartsAndBelow();
 }
 
 /**
- * Replace every shown type under a node's parent by the parent.
+ * Find what merging a one-page part folds together: every shown layout
+ * under its layout's parent.
  *
- * A parent shown before keeps its old name and routing; a new one is named
- * after the types it merges.
+ * @returns {{under: object[][], blocked: string|null}} under: the parts'
+ *   groups, this one included (empty without a parent); blocked: the label
+ *   of a multi-page part among them, which must be separated first
  */
-function mergeType(id) {
-  const parent = node(id).parent;
-  if (!parent) return;
-  const under = state.cut.filter((n) => P.TypeTree.within(n, parent));
-  const at = state.cut.indexOf(under[0]);
-  if (!state.meta.has(parent.id)) {
-    const ms = under.map((n) => state.meta.get(n.id));
-    newMeta(parent, ms.map((m) => m.label).join('+'), ms[0].color,
-      ms.map((m) => outputName(m.out)).join('+'), ms.every((m) => m.dest === DISCARD));
-  }
-  state.cut = state.cut.filter((n) => !under.includes(n));
-  state.cut.splice(at, 0, parent);
-  assign();
-  renderTypesAndBelow();
+function mergeSet(key) {
+  const parent = groupOf(key)[0].parent;
+  if (!parent) return { under: [], blocked: null };
+  const under = state.groups.filter((g) => g.some((n) => P.LayoutTree.within(n, parent)));
+  const multi = under.find((g) => g.length > 1);
+  return { under, blocked: multi ? state.meta.get(keyOf(multi)).label : null };
 }
 
-/** Labels of the other shown types a merge would fold in with this one. */
-function mergePartners(id) {
-  const parent = node(id).parent;
-  if (!parent) return [];
-  return state.cut.filter((n) => n.id !== id && P.TypeTree.within(n, parent))
-    .map((n) => state.meta.get(n.id).label);
+/** Labels of the other parts a merge would fold in with this one. */
+function mergePartners(key) {
+  return mergeSet(key).under.filter((g) => keyOf(g) !== key)
+    .map((g) => state.meta.get(keyOf(g)).label);
+}
+
+/**
+ * Replace every part under a layout's parent by the parent, as one part.
+ *
+ * A parent shown before keeps its old name and routing; a new one is named
+ * after the parts it merges.
+ */
+function mergePart(key) {
+  const { under, blocked } = mergeSet(key);
+  if (under.length < 2 || blocked) return;
+  const parent = groupOf(key)[0].parent;
+  const at = state.groups.indexOf(under[0]);
+  if (!state.meta.has(keyOf([parent]))) {
+    const ms = under.map((g) => state.meta.get(keyOf(g)));
+    newMeta([parent], ms.map((m) => m.label).join('+'), ms[0].color,
+      ms.map((m) => outputName(m.out)).join('+'), ms.every((m) => m.dest === DISCARD));
+  }
+  state.groups = state.groups.filter((g) => !under.includes(g));
+  state.groups.splice(at, 0, [parent]);
+  assign();
+  renderPartsAndBelow();
+}
+
+function* permutations(xs) {
+  if (xs.length <= 1) { yield xs; return; }
+  for (let i = 0; i < xs.length; i++) {
+    for (const r of permutations([...xs.slice(0, i), ...xs.slice(i + 1)])) yield [xs[i], ...r];
+  }
+}
+
+/**
+ * Put a would-be part's layouts in page order.
+ *
+ * Template pages keep the templates' order. Otherwise the order is read off
+ * the stack: steps[a][b] counts sheets of layout b directly after one of
+ * layout a (blank sheets skipped), and the order with the most steps
+ * between neighbouring pages wins, ties going to stack order.
+ *
+ * @returns {{order: object[], steps: number}} steps is Infinity for templates
+ */
+function pageOrder(nodes) {
+  if (nodes.every((n) => n.template)) {
+    const T = state.templates;
+    return { order: [...nodes].sort((a, b) => T.indexOf(a.template) - T.indexOf(b.template)),
+      steps: Infinity };
+  }
+  const byFirst = [...nodes].sort((a, b) => (a.first - b.first) || 0);
+  const at = new Map(byFirst.map((n, k) => [n.id, k]));
+  const steps = byFirst.map(() => byFirst.map(() => 0));
+  let prev = null;
+  for (const s of state.sheets) {
+    if (s.layout === BLANK) continue;
+    const j = at.get(s.layout) ?? null;
+    if (prev !== null && j !== null && j !== prev) steps[prev][j]++;
+    prev = j;
+  }
+  const score = (p) => p.slice(1).reduce((sc, k, i) => sc + steps[p[i]][k], 0);
+  const ids = byFirst.map((_, k) => k);
+  let best = { order: ids, steps: score(ids) };
+  // a part longer than this keeps stack order
+  if (ids.length <= 8) {
+    for (const p of permutations(ids)) {
+      const sc = score(p);
+      if (sc > best.steps) best = { order: p, steps: sc };
+    }
+  }
+  return { order: best.order.map((k) => byFirst[k]), steps: best.steps };
+}
+
+/**
+ * Join two parts into one multi-page part, its pages in stack order.
+ *
+ * A part's pages must sit together in the scanned input, so parts whose
+ * sheets never neighbour each other are refused. A new joined part takes
+ * the earlier part's label and color and gets its own output (routed where
+ * both parts went, if they agreed); joined before, it keeps its old name
+ * and routing.
+ */
+function joinParts(a, b) {
+  const [ga, gb] = [groupOf(a), groupOf(b)];
+  const [ma, mb] = [state.meta.get(a), state.meta.get(b)];
+  const { order, steps } = pageOrder([...ga, ...gb]);
+  if (!steps) {
+    alert(`Parts ${ma.label} and ${mb.label} never sit next to each other in the scans. ` +
+      'The pages of a multi-page part must be consecutive in the input.');
+    renderParts();
+    return;
+  }
+  const key = keyOf(order);
+  if (!state.meta.has(key)) {
+    const ms = state.groups.indexOf(ga) < state.groups.indexOf(gb) ? [ma, mb] : [mb, ma];
+    const m = newMeta(order, ms[0].label, ms[0].color, ms.map((x) => outputName(x.out)).join('+'));
+    if (ma.dest === mb.dest) m.dest = ma.dest;
+  }
+  const at = Math.min(state.groups.indexOf(ga), state.groups.indexOf(gb));
+  state.groups = state.groups.filter((g) => g !== ga && g !== gb);
+  state.groups.splice(at, 0, order);
+  assign();
+  renderPartsAndBelow();
+}
+
+/** Split a multi-page part into one-page parts; ones shown before keep their name and routing. */
+function separatePart(key) {
+  const g = groupOf(key);
+  const m = state.meta.get(key);
+  g.forEach((n, j) => {
+    if (!state.meta.has(keyOf([n]))) {
+      newMeta([n], `${m.label}-${j + 1}`, j ? unusedColor() : m.color,
+        `${outputName(m.out)}_p${j + 1}`, m.dest === DISCARD);
+    }
+  });
+  state.groups.splice(state.groups.indexOf(g), 1, ...g.map((n) => [n]));
+  assign();
+  renderPartsAndBelow();
 }
 
 /* ---------- routing helpers ---------- */
 
-const typeOf = (s) => state.types.find((t) => t.id === s.type);
-const destOf = (s) => s.dest ?? typeOf(s).dest;
+const partOf = (s) => state.parts.find((t) => t.id === s.part);
+const destOf = (s) => s.dest ?? partOf(s).dest;
 const outputName = (d) => (d === DISCARD ? 'discard'
   : state.outputs.find((o) => o.id === d)?.name ?? '?');
-const flagged = (s) => s.flipped || (s.type !== BLANK && s.margin < LOW_MARGIN);
+const incomplete = (s) => s.copy >= 0 && !state.copies[s.copy].complete;
+const flagged = (s) => s.flipped || incomplete(s) || (s.layout !== BLANK && s.margin < LOW_MARGIN);
 const workOnBack = (s) => s.back !== null && !state.pages[s.back].blank;
+/** Label a page of a part: the part's label, plus the page if it has several. */
+const pageLabel = (t, page) => (t.nodes.length > 1 ? `${t.label} p${page + 1}` : t.label);
 
-/** List outputs worth offering: shown types' own, custom, and any in use. */
+/** Route a sheet's whole copy (one student's pages of a part); null restores the default. */
+function routeCopy(i, d) {
+  const s = state.sheets[i];
+  for (const j of s.copy >= 0 ? state.copies[s.copy].sheets : [i]) state.sheets[j].dest = d;
+}
+
+/** List outputs worth offering: shown parts' own, custom, and any in use. */
 function liveOutputs() {
   const ids = new Set();
-  for (const t of state.types) {
+  for (const t of state.parts) {
     if (t.out) ids.add(t.out);
     if (t.dest !== DISCARD) ids.add(t.dest);
   }
   for (const s of state.sheets) if (s.dest && s.dest !== DISCARD) ids.add(s.dest);
-  return state.outputs.filter((o) => ids.has(o.id) || o.node === undefined);
+  // parts' own outputs in card order, then the rest
+  const rank = new Map(state.parts.map((t, k) => [t.out, k]));
+  return state.outputs.filter((o) => ids.has(o.id) || o.part === undefined)
+    .sort((a, b) => ((rank.get(a.id) ?? Infinity) - (rank.get(b.id) ?? Infinity)) || 0);
 }
 
 function destOptions(selected, { includeDefault = false } = {}) {
-  let h = includeDefault ? '<option value="">(page type default)</option>' : '';
+  let h = includeDefault ? '<option value="">(part default)</option>' : '';
   for (const o of liveOutputs()) {
     h += `<option value="${o.id}"${o.id === selected ? ' selected' : ''}>&rarr; ${esc(o.name)}.pdf</option>`;
   }
@@ -502,13 +708,13 @@ function resolveDest(value) {
 /* ---------- rendering ---------- */
 
 function renderAll() {
-  for (const id of ['summary', 'types', 'review', 'export']) $(`#${id}`).hidden = false;
+  for (const id of ['summary', 'parts', 'review', 'export']) $(`#${id}`).hidden = false;
   renderSummary();
-  renderTypesAndBelow();
+  renderPartsAndBelow();
 }
 
-function renderTypesAndBelow() {
-  renderTypes();
+function renderPartsAndBelow() {
+  renderParts();
   renderReview();
   renderExport();
   renderSummaryStats();
@@ -523,17 +729,18 @@ function renderFiles() {
 function renderSummary() {
   $('#summary').innerHTML = `<dl class="stats" id="stats"></dl>
     <div class="settings">
-      <label>Blank backs scanned
-        <select id="duplex-mode">
-          <option value="auto">auto (detected: ${state.duplexAuto ? 'yes' : 'no'})</option>
-          <option value="duplex">yes: each page pairs with the back after it</option>
-          <option value="simplex">no: every page stands alone</option>
+      <label>Blank-back mode
+        <select id="blank-back-mode">
+          <option value="auto">auto (detected: ${state.blankBackAuto ? 'on' : 'off'})</option>
+          <option value="on">on: each page and the blank back after it are one sheet</option>
+          <option value="off">off: every page stands alone</option>
         </select></label>
-      <span class="hint">Changing this re-sorts from scratch.</span>
+      <span class="hint">On when the scanner also captured each sheet's blank back;
+        off when backs carry questions or work. Changing this re-sorts from scratch.</span>
     </div>`;
-  $('#duplex-mode').value = state.duplexMode;
-  $('#duplex-mode').onchange = (e) => {
-    state.duplexMode = e.target.value;
+  $('#blank-back-mode').value = state.blankBackMode;
+  $('#blank-back-mode').onchange = (e) => {
+    state.blankBackMode = e.target.value;
     cluster();
     renderAll();
   };
@@ -542,91 +749,130 @@ function renderSummary() {
 
 function renderSummaryStats() {
   const sh = state.sheets;
-  const nTypes = state.types.filter((t) => t.id !== BLANK && t.n).length;
+  const nParts = state.parts.filter((t) => t.id !== BLANK_PART && t.nSheets).length;
+  const nLayouts = state.groups.flat().filter((n) => n.members.length).length;
   const per = state.period;
-  const label = (id) => state.types.find((t) => t.id === id)?.label ?? '?';
+  const label = (id) => {
+    if (id === BLANK) return state.blankMeta.label;
+    const t = state.parts.find((x) => x.nodes.some((n) => n.id === id));
+    return t ? pageLabel(t, t.nodes.findIndex((n) => n.id === id)) : '?';
+  };
   let exam = '—';
-  if (nTypes > 1 && per.p > 1 && per.agree > 0.5) {
+  if (nLayouts > 1 && per.p > 1 && per.agree > 0.5) {
     exam = per.window.map(label).join(' → ');
-  } else if (nTypes > 1) {
+  } else if (nLayouts > 1) {
     exam = 'not collated';
-  } else if (nTypes === 1) {
-    exam = 'one type';
+  } else if (nLayouts === 1) {
+    exam = 'one page';
   }
   const stat = (k, v) => `<div><dt>${k}</dt><dd>${esc(v)}</dd></div>`;
   $('#stats').innerHTML = `
     ${stat('pages', state.pages.length)}
     ${stat('sheets', sh.length)}
-    ${stat('blank backs scanned', isDuplex() ? 'yes' : 'no')}
+    ${stat('blank-back mode', blankBacks() ? 'on' : 'off')}
     ${stat('blank pages', state.pages.filter((p) => p.blank).length)}
-    ${stat('page types', nTypes)}
-    ${stat('sorted by', state.templates.length ? `${state.templates.length} templates` : 'learned from scans')}
+    ${stat('parts', nParts)}
+    ${stat('sorted by', state.templates.length ? `${state.templates.length} template pages` : 'learned from scans')}
     ${stat('one exam', exam)}
     ${stat('flagged', sh.filter(flagged).length)}`;
 }
 
-function renderTypes() {
-  $('#reset-types').hidden = !state.tree;
-  $('#types-hint').textContent = state.templates.length
-    ? 'One card per uploaded template, plus any group of sheets no template ' +
-      'matches (?1, ?2, …). A type\'s name is its output file; the magnifier ' +
-      'shows the matched sheets\' average next to the template. Backs always ' +
-      'travel with their front.'
-    : 'Each card is the average of every sheet of that type (handwriting fades ' +
-      'out, the printed page remains); the magnifier shows it large. A type\'s ' +
-      'name is its output file. Split a type that hides two versions, merge to ' +
-      'undo; names and routing are kept either way. Backs always travel with ' +
-      'their front.';
-  const unused = state.types.filter((t) => !t.n && t.node && t.node.template);
-  $('#types-unused').hidden = !unused.length;
-  $('#types-unused').textContent = unused.length
-    ? `No sheets matched ${unused.length} template${unused.length === 1 ? '' : 's'}: ` +
-      unused.map((t) => t.node.template.name).join(', ') + '.' : '';
-  $('#type-cards').innerHTML = state.types.filter((t) => !unused.includes(t)).map((t) => {
-    const n = t.node;
-    const kids = n && n.children;
-    const partners = n && state.tree ? mergePartners(t.id) : [];
-    const splitTip = kids
-      ? `Split into ${kids[0].members.length} + ${kids[1].members.length} sheets; their averages correlate ${n.score.toFixed(2)} (near 1: same printed page, only handwriting differs)`
-      : 'Cannot split: one sheet, or identical sheets';
-    const mergeTip = partners.length ? `Merge with ${partners.join(', ')}` : 'Nothing to merge with';
-    const tree = n && state.tree ? `<div class="tree-actions">
-        <button class="btn ghost small" data-split="${t.id}" title="${esc(splitTip)}"${kids ? '' : ' disabled'}>split${kids ? ` <span class="score">${kids[0].members.length}+${kids[1].members.length}</span>` : ''}</button>
-        <button class="btn ghost small" data-merge="${t.id}" title="${esc(mergeTip)}"${partners.length ? '' : ' disabled'}>merge${partners.length ? ` with ${esc(partners.join(', '))}` : ''}</button>
-      </div>` : '';
-    return `<div class="type-card" style="--c:${t.color}">
-      <div class="thumb"><img src="${t.img}" alt="average of type ${esc(t.label)}">
-        <button class="mag" data-inspect="${t.id}" title="examine this type">${MAG}</button></div>
+const plural = (n, one, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
+
+function renderParts() {
+  $('#reset-parts').hidden = !state.tree;
+  $('#parts-hint').textContent = (state.templates.length
+    ? 'One part per template file, or per page when the templates are one PDF, ' +
+      'plus any group of sheets no template matches (?1, ?2, …). The magnifier ' +
+      'shows a page\'s matched sheets averaged, next to its template.'
+    : 'Each page is the average of every sheet sorted to it (handwriting fades ' +
+      'out, the printed page remains); the magnifier shows it large. Split a ' +
+      'page that hides two versions, merge to undo.') +
+    ' A part\'s name is its output file; names and routing are kept as you ' +
+    'split, merge, join and separate.' +
+    (blankBacks() ? ' Blank backs travel with their front.' : '');
+  const unused = state.parts.filter((t) => !t.nSheets);
+  $('#parts-unused').hidden = !unused.length;
+  $('#parts-unused').textContent = unused.length
+    ? `No sheets matched ${plural(unused.length, 'template part')}: ` +
+      unused.map((t) => outputName(t.out)).join(', ') + '.' : '';
+  const shown = state.parts.filter((t) => t.nSheets);
+  const joinable = shown.filter((t) => t.id !== BLANK_PART);
+  $('#part-cards').innerHTML = shown.map((t) => {
+    const multi = t.nodes.length > 1;
+    const one = t.nodes.length === 1 && state.tree ? t.nodes[0] : null;
+    let tree = '';
+    if (one) {
+      const kids = one.children;
+      const { blocked } = mergeSet(t.id);
+      const partners = mergePartners(t.id);
+      const canMerge = partners.length && !blocked;
+      const splitTip = kids
+        ? `Split into ${kids[0].members.length} + ${kids[1].members.length} sheets; their averages correlate ${one.score.toFixed(2)} (near 1: same printed page, only handwriting differs)`
+        : 'Cannot split: one sheet, or identical sheets';
+      const mergeTip = blocked ? `Separate part ${blocked}'s pages first`
+        : partners.length ? `Merge with ${partners.join(', ')}` : 'Nothing to merge with';
+      tree = `<div class="tree-actions">
+        <button class="btn ghost small" data-split="${esc(t.id)}" title="${esc(splitTip)}"${kids ? '' : ' disabled'}>split${kids ? ` <span class="score">${kids[0].members.length}+${kids[1].members.length}</span>` : ''}</button>
+        <button class="btn ghost small" data-merge="${esc(t.id)}" title="${esc(mergeTip)}"${canMerge ? '' : ' disabled'}>merge${canMerge ? ` with ${esc(partners.join(', '))}` : ''}</button>
+      </div>`;
+    }
+    const others = joinable.filter((x) => x !== t);
+    const join = t.id !== BLANK_PART && others.length
+      ? `<select class="join" data-join="${esc(t.id)}" aria-label="join part ${esc(t.label)} with another part"
+          title="make a multi-page part of these pages and another part's">
+          <option value="">join with…</option>
+          ${others.map((x) => `<option value="${esc(x.id)}">${esc(x.label)} · ${esc(outputName(x.out))}</option>`).join('')}
+        </select>` : '';
+    const sep = multi ? `<button class="btn ghost small" data-separate="${esc(t.id)}"
+      title="split back into one-page parts">separate pages</button>` : '';
+    const thumbs = (multi ? t.nodes : [t.nodes[0] ?? null]).map((n, j) => `<div class="thumb">
+        <img src="${t.imgs[j]}" alt="average of part ${esc(t.label)}${multi ? ` page ${j + 1}` : ''}">
+        ${multi ? `<span class="pg">p${j + 1}</span>` : ''}
+        <button class="mag" data-inspect="${n ? n.id : BLANK}" title="examine this page">${MAG}</button></div>`).join('');
+    const count = multi
+      ? `<span class="hint" title="complete copies: one student's ${t.nodes.length} pages in a row">${plural(t.n, 'copy', 'copies')}</span>`
+      : `<span class="hint" title="sheets">${t.nSheets}</span>`;
+    return `<div class="part-card${multi ? ' wide' : ''}" style="--c:${t.color}">
+      <div class="pages" style="--k:${Math.min(t.nodes.length || 1, 4)}">${thumbs}</div>
       <div class="row"><span class="tag">${esc(t.label)}</span>
         ${t.out ? `<input type="text" class="name" data-out="${t.out}" value="${esc(outputName(t.out))}"
-          aria-label="name of type ${esc(t.label)}" title="name; also its output file name">` : '<span class="name">blank pages</span>'}
-        <span class="hint">${t.n}</span></div>
-      <label class="dest">send to <select data-type="${t.id}">${destOptions(t.dest)}</select></label>
+          aria-label="name of part ${esc(t.label)}" title="name; also its output file name">` : '<span class="name">blank pages</span>'}
+        ${count}</div>
+      ${t.nIncomplete ? `<p class="warn-line">${plural(t.nIncomplete, 'incomplete copy', 'incomplete copies')}</p>` : ''}
+      <label class="dest">send to <select data-part="${esc(t.id)}">${destOptions(t.dest)}</select></label>
       ${tree}
+      ${join || sep ? `<div class="tree-actions">${join}${sep}</div>` : ''}
     </div>`;
   }).join('');
-  for (const sel of document.querySelectorAll('#type-cards select')) {
+  const byKey = (k) => state.parts.find((x) => x.id === k);
+  for (const sel of document.querySelectorAll('#part-cards select[data-part]')) {
     sel.onchange = () => {
-      const t = state.types.find((x) => x.id === +sel.dataset.type);
       const d = resolveDest(sel.value);
-      if (d) t.dest = d;
-      renderTypesAndBelow();
+      if (d) byKey(sel.dataset.part).dest = d;
+      renderPartsAndBelow();
     };
   }
-  for (const inp of document.querySelectorAll('#type-cards input.name')) {
+  for (const inp of document.querySelectorAll('#part-cards input.name')) {
     inp.onchange = () => {
       const o = state.outputs.find((x) => x.id === inp.dataset.out);
       o.name = inp.value.trim().replace(/\.pdf$/i, '') || o.name;
-      renderTypesAndBelow();
+      renderPartsAndBelow();
     };
   }
-  for (const b of document.querySelectorAll('#type-cards [data-split]')) {
-    b.onclick = () => splitType(+b.dataset.split);
+  for (const sel of document.querySelectorAll('#part-cards select[data-join]')) {
+    sel.onchange = () => { if (sel.value) joinParts(sel.dataset.join, sel.value); };
   }
-  for (const b of document.querySelectorAll('#type-cards [data-merge]')) {
-    b.onclick = () => mergeType(+b.dataset.merge);
+  for (const b of document.querySelectorAll('#part-cards [data-separate]')) {
+    b.onclick = () => separatePart(b.dataset.separate);
   }
-  for (const b of document.querySelectorAll('#type-cards [data-inspect]')) {
+  for (const b of document.querySelectorAll('#part-cards [data-split]')) {
+    b.onclick = () => splitPart(b.dataset.split);
+  }
+  for (const b of document.querySelectorAll('#part-cards [data-merge]')) {
+    b.onclick = () => mergePart(b.dataset.merge);
+  }
+  for (const b of document.querySelectorAll('#part-cards [data-inspect]')) {
     b.onclick = () => openInspector(+b.dataset.inspect);
   }
 }
@@ -636,38 +882,42 @@ function visibleSheets() {
   return state.sheets.map((s, i) => [s, i]).filter(([s]) => (
     f === 'all' ? true
       : f === 'flagged' ? flagged(s)
-        : f === 'back' ? workOnBack(s)
-          : f === 'discard' ? destOf(s) === DISCARD
-            : s.type === +f.slice(1)));
+        : f === 'incomplete' ? incomplete(s)
+          : f === 'back' ? workOnBack(s)
+            : f === 'discard' ? destOf(s) === DISCARD
+              : s.part === f.slice(2)));
 }
 
 function tileHtml(s, i) {
-  const t = typeOf(s);
+  const t = partOf(s);
   const d = destOf(s);
   const badges = [];
   if (s.flipped) badges.push('<span class="badge warn" title="scanned back-first; front detected">flipped</span>');
-  if (s.type !== BLANK && s.margin < LOW_MARGIN) badges.push('<span class="badge warn" title="close to another type">unsure</span>');
+  if (incomplete(s)) badges.push('<span class="badge warn" title="this copy\'s pages are not all here, in order">incomplete</span>');
+  if (s.layout !== BLANK && s.margin < LOW_MARGIN) badges.push('<span class="badge warn" title="close to another page">unsure</span>');
   if (s.dest !== null) badges.push(`<span class="badge">&rarr; ${esc(outputName(d))}</span>`);
   const back = workOnBack(s) ? `<img class="back" src="${state.pages[s.back].thumb}" alt="" title="back has writing">` : '';
   return `<div class="tile${state.selected.has(i) ? ' sel' : ''}${d === DISCARD ? ' discard' : ''}"
       data-i="${i}" style="--c:${t.color}" tabindex="0">
     <img class="front" src="${state.pages[s.front].thumb}" alt="" loading="lazy">${back}
     <button class="zoom" title="inspect">&#10530;</button>
-    <div class="meta"><span class="tag">${esc(t.label)}</span>#${i + 1} ${badges.join(' ')}</div>
+    <div class="meta"><span class="tag">${esc(pageLabel(t, s.page))}</span>#${i + 1} ${badges.join(' ')}</div>
   </div>`;
 }
 
 function renderReview() {
-  if (!state.types.some((t) => `t${t.id}` === state.filter)) {
-    if (state.filter.startsWith('t')) state.filter = 'all';
+  if (state.filter.startsWith('p:') && !state.parts.some((t) => `p:${t.id}` === state.filter)) {
+    state.filter = 'all';
   }
   const sh = state.sheets;
   const chips = [['all', `all ${sh.length}`], ['flagged', `flagged ${sh.filter(flagged).length}`],
+    ...(state.parts.some((t) => t.nodes.length > 1)
+      ? [['incomplete', `incomplete copies ${sh.filter(incomplete).length}`]] : []),
     ['back', `work on back ${sh.filter(workOnBack).length}`],
-    ...state.types.filter((t) => t.n).map((t) => [`t${t.id}`, `${t.label} ${t.n}`]),
+    ...state.parts.filter((t) => t.nSheets).map((t) => [`p:${t.id}`, `${t.label} ${t.nSheets}`]),
     ['discard', `discarded ${sh.filter((s) => destOf(s) === DISCARD).length}`]];
   $('#filters').innerHTML = chips.map(([k, l]) =>
-    `<button class="chip${state.filter === k ? ' on' : ''}" data-f="${k}">${esc(l)}</button>`).join('');
+    `<button class="chip${state.filter === k ? ' on' : ''}" data-f="${esc(k)}">${esc(l)}</button>`).join('');
   for (const b of document.querySelectorAll('#filters .chip')) {
     b.onclick = () => { state.filter = b.dataset.f; renderReview(); };
   }
@@ -720,7 +970,7 @@ function renderBulk() {
     const v = e.target.value;
     const d = v === '__default' ? null : resolveDest(v);
     if (v !== '__default' && !d) return;
-    for (const i of state.selected) state.sheets[i].dest = d;
+    for (const i of state.selected) routeCopy(i, d);
     state.selected.clear();
     renderReview();
     renderExport();
@@ -783,17 +1033,20 @@ async function openPreview(i) {
   if (!dlg.open) dlg.showModal();
   const s = state.sheets[i];
   const p = state.pages[s.front];
-  const t = typeOf(s);
+  const t = partOf(s);
+  const c = s.copy >= 0 && t.nodes.length > 1 ? state.copies[s.copy] : null;
   const pageNums = [s.front, s.back].filter((x) => x !== null)
     .map((x) => state.pages[x].idx + 1).sort((a, b) => a - b).join('–');
-  $('#pv-title').innerHTML = `<span class="tag" style="--c:${t.color}">${esc(t.label)}</span>
+  $('#pv-title').innerHTML = `<span class="tag" style="--c:${t.color}">${esc(pageLabel(t, s.page))}</span>
     Sheet ${i + 1} of ${state.sheets.length} · ${esc(p.file.name)} p${pageNums}
-    · match margin ${s.type === BLANK ? '—' : s.margin.toFixed(2)}${s.flipped ? ' · scanned back-first' : ''}`;
+    · match margin ${s.layout === BLANK ? '—' : s.margin.toFixed(2)}${s.flipped ? ' · scanned back-first' : ''}
+    ${c ? ` · ${c.complete ? '' : 'incomplete '}copy of ${plural(c.sheets.length, 'sheet')}` : ''}`;
+  $('#pv-dest-label').textContent = c ? `Send this copy (${plural(c.sheets.length, 'sheet')}) to` : 'Send to';
   const sel = $('#pv-dest');
   sel.innerHTML = destOptions(destOf(s));
   sel.onchange = () => {
     const d = resolveDest(sel.value);
-    if (d) s.dest = d === typeOf(s).dest ? null : d;
+    if (d) routeCopy(i, d === t.dest ? null : d);
     renderReview();
     renderExport();
     openPreview(i);
@@ -827,36 +1080,41 @@ $('#preview').addEventListener('keydown', (e) => {
   if (e.key === 'ArrowRight') $('#pv-next').click();
 });
 
-/* ---------- type inspector ---------- */
+/* ---------- page inspector ---------- */
 
 let inspectToken = 0;
 
-/** Open the inspector: a type's average, large, and its split preview. */
+/** Open the inspector on one page of a part: its average, large, and its split preview. */
 async function openInspector(id) {
   const token = ++inspectToken;
   const dlg = $('#inspect');
   if (!dlg.open) dlg.showModal();
-  const t = state.types.find((x) => x.id === id);
-  const n = t.node;
-  $('#in-title').innerHTML = `<span class="tag" style="--c:${t.color}">${esc(t.label)}</span>
-    ${t.n} sheet${t.n === 1 ? '' : 's'} · &rarr; ${esc(outputName(t.dest))}`;
-  const kids = n && state.tree && n.children;
+  const n = id === BLANK ? null : layoutNode(id);
+  const t = n ? state.parts.find((x) => x.nodes.includes(n)) : state.blankMeta;
+  const j = n ? t.nodes.indexOf(n) : 0;
+  const fronts = state.sheets.filter((s) => s.layout === id).map((s) => s.front);
+  $('#in-title').innerHTML = `<span class="tag" style="--c:${t.color}">${esc(pageLabel(t, j))}</span>
+    ${t.nodes.length > 1 ? `page ${j + 1} of ${t.nodes.length} · ` : ''}${plural(fronts.length, 'sheet')}
+    · &rarr; ${esc(outputName(t.dest))}`;
+  // split and merge act on the one-page parts of a learned tree
+  const one = n && state.tree && t.nodes.length === 1;
+  const kids = one && n.children;
   $('#in-split-box').hidden = !kids;
   $('#in-tpl-box').hidden = !(n && n.template);
   if (n && n.template) drawLarge(n.template, $('#in-tpl'), HI_W);
-  const partners = n && state.tree ? mergePartners(id) : [];
+  const partners = one && !mergeSet(t.id).blocked ? mergePartners(t.id) : [];
   $('#in-merge').hidden = !partners.length;
   $('#in-merge').textContent = `merge with ${partners.join(', ')}`;
-  $('#in-merge').onclick = () => { dlg.close(); mergeType(id); };
+  $('#in-merge').onclick = () => { dlg.close(); mergePart(t.id); };
   if (kids) {
     $('#in-score').textContent = `If split, the two halves' averages correlate ${n.score.toFixed(2)}. ` +
       'Near 1 means the same printed page (only handwriting differs); ' +
       'lower means different pages or versions. Compare the two below.';
-    $('#in-k0-cap').textContent = `${kids[0].members.length} sheets`;
-    $('#in-k1-cap').textContent = `${kids[1].members.length} sheets`;
-    $('#in-split').onclick = () => { dlg.close(); splitType(id); };
+    $('#in-k0-cap').textContent = plural(kids[0].members.length, 'sheet');
+    $('#in-k1-cap').textContent = plural(kids[1].members.length, 'sheet');
+    $('#in-split').onclick = () => { dlg.close(); splitPart(t.id); };
   }
-  inView = { t, node: n, fronts: state.sheets.filter((s) => s.type === id).map((s) => s.front) };
+  inView = { img: t.imgs[j], node: n, fronts };
   showInspectPos(0);
   const previews = kids ? [[$('#in-k0'), kids[0]], [$('#in-k1'), kids[1]]] : [];
   for (const [cv, nd] of previews) placeholder(cv, nodeImage(nd), () => token === inspectToken);
@@ -867,14 +1125,14 @@ async function openInspector(id) {
   }
 }
 
-// the inspector's main view: {t, node, fronts, pos}; pos 0 is the average,
-// pos i the i-th sheet of the type
+// the inspector's main view: {img, node, fronts, pos}; pos 0 is the
+// average, pos i the i-th sheet of the page
 let inView = null;
 let mainToken = 0;
 
-/** Show the type's average (pos 0) or one of its sheets, full resolution. */
+/** Show the page's average (pos 0) or one of its sheets, full resolution. */
 async function showInspectPos(pos) {
-  const { t, node: n, fronts } = inView;
+  const { img, node: n, fronts } = inView;
   const token = ++mainToken;
   const cv = $('#in-cons');
   inView.pos = pos;
@@ -884,7 +1142,7 @@ async function showInspectPos(pos) {
   if (pos === 0) {
     $('#in-cap').textContent = `average of up to ${HI_N} sheets · arrows step through ` +
       'single sheets · hover to magnify';
-    placeholder(cv, n && !n.template ? nodeImage(n) : t.img, () => token === mainToken);
+    placeholder(cv, n && !n.template ? nodeImage(n) : img, () => token === mainToken);
     const hi = await hiConsensus(n ? n.id : 'blank', n ? n.members : fronts, n && n.cons);
     if (token === mainToken) copyTo(cv, hi);
     return;
@@ -933,7 +1191,7 @@ function placeholder(canvas, url, current) {
 /**
  * Render a readable average of up to HI_N member pages (cached).
  *
- * Each page is first shifted onto the type's consensus (cons, a feature
+ * Each page is first shifted onto the layout's consensus (cons, a feature
  * vector) so feed offsets between scans do not ghost the printed text.
  */
 async function hiConsensus(key, members, cons) {
@@ -992,31 +1250,31 @@ function pagesFor(outId) {
 }
 
 function renderExport() {
-  const inUse = (o) => state.types.some((t) => t.dest === o.id) || pagesFor(o.id).length;
+  const inUse = (o) => state.parts.some((t) => t.dest === o.id) || pagesFor(o.id).length;
   const rows = liveOutputs().filter(inUse).map((o) => {
     const n = state.sheets.filter((s) => destOf(s) === o.id).length;
-    const colors = state.types.filter((t) => t.dest === o.id).map((t) => t.color);
+    const colors = state.parts.filter((t) => t.dest === o.id).map((t) => t.color);
     return `<div class="out-row" style="--c:${colors[0] ?? 'var(--line)'}">
       <span class="dot"></span>
-      ${o.node === undefined
+      ${o.part === undefined
     ? `<input type="text" value="${esc(o.name)}" data-o="${o.id}" aria-label="output name">`
-    : `<span class="out-name" title="rename on its page-type card">${esc(o.name)}.pdf</span>`}
-      <span class="count">${n} sheet${n === 1 ? '' : 's'} · ${pagesFor(o.id).length} pages</span>
+    : `<span class="out-name" title="rename on its part card">${esc(o.name)}.pdf</span>`}
+      <span class="count">${plural(n, 'sheet')} · ${pagesFor(o.id).length} pages</span>
       <button class="btn" data-dl="${o.id}"${n ? '' : ' disabled'}>download .pdf</button>
     </div>`;
   }).join('');
   const nd = state.sheets.filter((s) => destOf(s) === DISCARD).length;
   $('#outputs').innerHTML = `${rows}
-    <p class="hint">${nd} sheet${nd === 1 ? '' : 's'} discarded.</p>
+    <p class="hint">${plural(nd, 'sheet')} discarded.</p>
     <div class="out-actions">
       <button class="btn" id="dl-all">download all</button>
-      <label><input type="checkbox" id="omit-blank"${state.omitBlankBacks ? ' checked' : ''}>
-        leave out blank backs (off keeps every sheet at 2 pages, as Gradescope expects)</label>
+      ${blankBacks() ? `<label><input type="checkbox" id="omit-blank"${state.omitBlankBacks ? ' checked' : ''}>
+        leave out blank backs (off keeps every sheet at 2 pages, as Gradescope expects)</label>` : ''}
     </div>`;
   for (const inp of document.querySelectorAll('#outputs input[type=text]')) {
     inp.onchange = () => {
       state.outputs.find((o) => o.id === inp.dataset.o).name = inp.value.replace(/\.pdf$/i, '') || 'output';
-      renderTypes();
+      renderParts();
       renderReview();
     };
   }
@@ -1026,7 +1284,9 @@ function renderExport() {
   $('#dl-all').onclick = async () => {
     for (const o of state.outputs) if (pagesFor(o.id).length) await exportOutput(o.id);
   };
-  $('#omit-blank').onchange = (e) => { state.omitBlankBacks = e.target.checked; renderExport(); };
+  if ($('#omit-blank')) {
+    $('#omit-blank').onchange = (e) => { state.omitBlankBacks = e.target.checked; renderExport(); };
+  }
 }
 
 async function libDoc(file) {
@@ -1091,11 +1351,16 @@ drop.addEventListener('drop', (e) => {
   readFiles(e.dataTransfer.files);
 });
 $('#file').addEventListener('change', (e) => readFiles(e.target.files));
-$('#reset-types').onclick = () => { autoCut(); renderTypesAndBelow(); };
+$('#reset-parts').onclick = () => { autoCut(); renderPartsAndBelow(); };
 
 /* ---------- templates ---------- */
 
-/** Load blank template PDFs; every non-blank page becomes a template. */
+/**
+ * Load blank template PDFs; every non-blank page becomes a template.
+ *
+ * One PDF may hold the whole exam (its pages start as one-page parts) or
+ * several PDFs one question each (each file starts as one part).
+ */
 async function addTemplates(items) {
   items.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
   const found = [];
@@ -1116,7 +1381,7 @@ async function addTemplates(items) {
   for (const t of kept) {
     const stem = t.file.name.replace(/\.pdf$/i, '');
     const many = kept.filter((u) => u.file === t.file).length > 1;
-    state.templates.push({ ...t, name: many ? `${stem}_p${t.idx + 1}` : stem });
+    state.templates.push({ ...t, stem, name: many ? `${stem}_p${t.idx + 1}` : stem });
   }
   renderTemplates();
   if (state.pages.length) { cluster(); renderAll(); }

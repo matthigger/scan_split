@@ -101,14 +101,34 @@ select, input[type=text] {
 .settings { display: flex; flex-wrap: wrap; gap: 8px 24px; align-items: center;
   margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--line); font-size: 14px; }
 .settings input[type=range] { vertical-align: middle; width: 140px; }
+.settings label { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; max-width: 100%; }
+.settings select { max-width: 100%; min-width: 0; }
 
-.type-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 14px; }
-.type-card {
+.part-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 14px; }
+.part-card {
   background: var(--card); border: 1px solid var(--line); border-top: 5px solid var(--c);
   border-radius: 10px; padding: 10px; box-shadow: var(--shadow);
 }
-.type-card .thumb { position: relative; }
-.type-card img { width: 100%; aspect-ratio: 256 / 332; border-radius: 4px; background: var(--paper);
+.part-card.wide { grid-column: span 2; }
+@media (max-width: 480px) { .part-card.wide { grid-column: auto; } }
+.part-card .pages { display: grid; grid-template-columns: repeat(var(--k), minmax(0, 1fr)); gap: 6px; }
+.part-card .thumb { position: relative; }
+.part-card .pg {
+  position: absolute; left: 6px; top: 6px; padding: 0 5px; border-radius: 4px;
+  background: var(--c); color: #fff; font-size: 11.5px; font-weight: 700;
+}
+.part-card .warn-line { color: var(--warn); font-size: 13px; margin: 0 0 4px; }
+.part-card .tree-actions select { flex: 1; min-width: 0; width: auto; }
+.note {
+  font-size: 13.5px; margin: 4px 0 14px; padding: 8px 12px; border-radius: 8px;
+  background: var(--card); border: 1px solid var(--line); border-left: 4px solid var(--accent);
+}
+.example { margin-top: -6px; }
+button.link {
+  border: 0; padding: 0; background: none; font: inherit; color: var(--accent);
+  text-decoration: underline; text-underline-offset: 2px; cursor: pointer;
+}
+.part-card img { width: 100%; aspect-ratio: 256 / 332; border-radius: 4px; background: var(--paper);
   border: 1px solid var(--line); display: block; }
 .mag {
   position: absolute; right: 6px; bottom: 6px; display: grid; place-items: center;
@@ -121,14 +141,14 @@ select, input[type=text] {
 .btn.small { padding: 2px 8px; font-size: 13px; }
 .score { opacity: .7; font-variant-numeric: tabular-nums; }
 .h-row { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
-.type-card .row { display: flex; justify-content: space-between; align-items: center; margin: 8px 0 4px; gap: 8px; }
-.type-card .row b { font-size: 16px; }
-.type-card .name { flex: 1; min-width: 0; font-weight: 600; }
-.type-card span.name { color: var(--muted); font-weight: 400; font-size: 14px; }
-.type-card .dest { display: flex; gap: 6px; align-items: center; font-size: 13px; color: var(--muted); }
-.type-card .dest select { flex: 1; min-width: 0; }
+.part-card .row { display: flex; justify-content: space-between; align-items: center; margin: 8px 0 4px; gap: 8px; }
+.part-card .row b { font-size: 16px; }
+.part-card .name { flex: 1; min-width: 0; font-weight: 600; }
+.part-card span.name { color: var(--muted); font-weight: 400; font-size: 14px; }
+.part-card .dest { display: flex; gap: 6px; align-items: center; font-size: 13px; color: var(--muted); }
+.part-card .dest select { flex: 1; min-width: 0; }
 .out-name { font-weight: 600; }
-.type-card select { width: 100%; }
+.part-card select { width: 100%; }
 
 .tag {
   display: inline-block; min-width: 20px; padding: 0 6px; border-radius: 5px;
