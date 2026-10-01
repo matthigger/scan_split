@@ -249,6 +249,9 @@ canvas.zoomable { cursor: zoom-in; }
 .tpl-row.over { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 8%, transparent); }
 .tpl-row .hint { margin: 0; }
 .tpl-actions { display: flex; gap: 8px; }
+#files li a, #tpls li a { color: inherit; text-decoration: none; }
+#files li a:hover, #tpls li a:hover { text-decoration: underline; }
+#files li a.dl, #tpls li a.dl { color: var(--muted); padding-left: 2px; }
 #tpls li button.icon { font-size: 15px; padding: 0 0 0 4px; vertical-align: baseline; }
 .clear-row { margin: 8px 0 0; text-align: right; }
 .clear-row:has(> [hidden]) { display: none; }
