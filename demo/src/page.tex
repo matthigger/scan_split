@@ -1,6 +1,6 @@
-% One page of the fictional DEMO 101 quiz used by the scan_split example.
+% One question of the fictional DEMO 101 quiz used by the scan_split example.
 % Build (see build.sh): pdflatex -jobname=<ver>_<pg> "\def\ver{a}\def\pg{q1}\input{page}"
-% \ver in {a, b} picks the version's numbers; \pg in {cover, q1, q2}.
+% \ver in {a, b} picks the version's numbers; \pg in {cover, q1, q2, q3}.
 \documentclass[11pt]{article}
 \usepackage[letterpaper, margin=0.9in]{geometry}
 \usepackage{amsmath, amssymb, booktabs, tikz, tcolorbox}
@@ -85,7 +85,10 @@
   \pick{0}{1}.
 
   \begin{center}
-    \begin{tikzpicture}[scale=0.85]
+    % the versions' plots differ in size too, so that without templates
+    % their averages split apart; make_scans.py's AXES follows this scale
+    \pick{\def\qsc{0.85}}{\def\qsc{0.7}}
+    \begin{tikzpicture}[scale=\qsc]
       \draw[->, thick] (-4, 0) -- (5, 0) node[right] {$x_1$};
       \draw[->, thick] (0, -3) -- (0, 5) node[above] {$x_2$};
       \foreach \t in {-3, ..., 4} \draw (\t, 0.1) -- (\t, -0.1);
@@ -106,6 +109,85 @@
   \end{enumerate}
   \vfill
   \begin{center}3\end{center}
+}{}
+
+% Q3 spans two pages, so its template PDF has two pages: one part, two pages
+\ifthenelse{\equal{\pg}{q3}}{%
+  \namebox
+  \medskip
+  \textbf{Problem 3 [10 pts] Pass or fail} \hfill (two pages)\par\smallskip
+  A logistic model predicts whether a student passes from the hours $x$
+  they studied:
+  \[ P(\text{pass} \mid x) = \sigma(w x + b), \qquad
+     \sigma(z) = \frac{1}{1 + e^{-z}}, \]
+  with current parameters $w = \pick{0.8}{0.5}$ and $b = \pick{-2}{-1.5}$.
+  The training set is
+
+  \medskip
+  \begin{center}
+    % the versions' tables differ in shape, not only in numbers, so that
+    % without templates their averages split apart
+    \pick{%
+      \begin{tabular}{l | c c c c}
+        student & 1 & 2 & 3 & 4\\
+        \hline
+        hours $x_i$ & 1 & 2 & 4 & 5\\
+        passed $y_i$ & 0 & 0 & 1 & 1\\
+      \end{tabular}}{%
+      \begin{tabular}{c c c}
+        \toprule
+        student & hours $x_i$ & passed $y_i$\\
+        \midrule
+        1 & 1 & 0\\ 2 & 2 & 0\\ 3 & 3 & 1\\ 4 & 5 & 1\\ 5 & 6 & 1\\
+        \bottomrule
+      \end{tabular}}
+  \end{center}
+
+  \begin{enumerate}
+    \item[(a)] What does the model give for $P(\text{pass} \mid
+      x = \pick{3}{4})$?
+    \pick{\vspace{2.6in}}{\vspace{2.1in}}
+    \item[(b)] Compute the log-loss
+      $L = -\sum_i \left[ y_i \log p_i + (1 - y_i) \log(1 - p_i) \right]$,
+      where $p_i = \sigma(w x_i + b)$.
+  \end{enumerate}
+  \vfill
+  \begin{center}4\end{center}
+  \newpage
+  \namebox
+  \medskip
+  \textbf{Problem 3 (continued)}\par\smallskip
+  \begin{enumerate}
+    \item[(c)] The gradient is
+      $\partial L / \partial w = \sum_i (p_i - y_i)\, x_i$ and
+      $\partial L / \partial b = \sum_i (p_i - y_i)$. Take one gradient
+      step with learning rate $\eta = \pick{0.1}{0.05}$: give the new $w$
+      and $b$.
+    \pick{\vspace{2.4in}}{\vspace{1.7in}}
+    \item[(d)] Sketch $P(\text{pass} \mid x)$ under the
+      \emph{original} $(w, b)$ on the axes below, and mark the hours at
+      which the model's prediction switches to pass.
+  \end{enumerate}
+  \begin{center}
+    % make_scans.py draws on these axes: keep its AXES scales in step
+    \pick{\def\xmax{7}\def\xsc{1.6}\def\ysc{4.2}\def\xs{0.5}\def\ys{0.1}}{%
+      \def\xmax{9}\def\xsc{1.25}\def\ysc{3.6}\def\xs{1}\def\ys{0.25}}
+    \begin{tikzpicture}[xscale=\xsc, yscale=\ysc]
+      \draw[xstep=\xs, ystep=\ys, black!25, very thin] (0, 0)
+        grid (\xmax, 1);
+      \draw[->, thick] (0, 0) -- (\xmax + 0.3, 0) node[right] {$x$ (hours)};
+      \draw[->, thick] (0, 0) -- (0, 1.12) node[above] {$P$};
+      \foreach \t in {0, ..., \xmax} \draw (\t, 0.02) -- (\t, -0.02)
+        node[below] {\t};
+      \foreach \t in {0.5, 1} \draw (0.06, \t) -- (-0.06, \t)
+        node[left] {\t};
+      \draw[dotted, thick] (0, 0.5) -- (\xmax, 0.5);
+      \pick{\fill (3, 0) circle (1.2pt) node[above right] {$x = 3$};}{%
+        \fill (4, 0) circle (1.2pt) node[above right] {$x = 4$};}
+    \end{tikzpicture}
+  \end{center}
+  \vfill
+  \begin{center}5\end{center}
 }{}
 
 \end{document}
