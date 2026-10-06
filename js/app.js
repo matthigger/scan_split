@@ -828,9 +828,9 @@ function renderParts() {
         <button class="btn ghost small" data-merge="${esc(t.id)}" title="${esc(mergeTip)}"${canMerge ? '' : ' disabled'}>merge${canMerge ? ` with ${esc(partners.join(', '))}` : ''}</button>
       </div>`;
     }
-    const others = joinable.filter((x) => x !== t &&
+    const others = t.id === BLANK_PART ? [] : joinable.filter((x) => x !== t &&
       pageOrder([...groupOf(t.id), ...groupOf(x.id)]).linked);
-    const join = t.id !== BLANK_PART && others.length
+    const join = others.length
       ? `<select class="join" data-join="${esc(t.id)}" aria-label="staple part ${esc(t.label)} to another part"
           title="each student's pages in order, one PDF">
           <option value="">staple to…</option>
