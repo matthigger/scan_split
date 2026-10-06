@@ -419,7 +419,7 @@ const letter = (k) => (k < 26 ? String.fromCharCode(65 + k) : `T${k}`);
 
 /**
  * Give each sheet the shown layout holding its front and a match margin,
- * then gather the parts and cut the stack into copies.
+ * then gather the parts (see regroup).
  */
 function assign() {
   const pages = state.pages;
@@ -441,13 +441,23 @@ function assign() {
       s.margin = P.shiftDot(v, node.cons) - Math.max(...others.map((m) => P.shiftDot(v, m.cons)));
     }
   }
+  const blanks = state.sheets.filter((s) => s.layout === BLANK);
+  state.blankImg = blanks.length ? consensusImage(blanks.map((s) => pages[s.front])) : null;
+  regroup();
+}
+
+/**
+ * Gather the parts from the groups and cut the stack into copies.
+ *
+ * Margins depend only on which layouts are shown, not on how they are
+ * grouped, so moving pages between parts needs this alone, not assign.
+ */
+function regroup() {
   state.parts = state.groups.map((nodes) => Object.assign(state.meta.get(keyOf(nodes)), {
     nodes, imgs: nodes.map((n) => (n.template ? n.template.thumb : nodeImage(n))),
   }));
-  const blanks = state.sheets.filter((s) => s.layout === BLANK);
-  if (blanks.length) {
-    state.parts.push(Object.assign(state.blankMeta, {
-      nodes: [], imgs: [consensusImage(blanks.map((s) => pages[s.front]))] }));
+  if (state.blankImg) {
+    state.parts.push(Object.assign(state.blankMeta, { nodes: [], imgs: [state.blankImg] }));
   }
   cutCopies();
   for (const t of state.parts) {
@@ -771,7 +781,7 @@ function movePage(id, target) {
     } else groups.push(g === dst ? moved : g);
   }
   state.groups = groups;
-  assign();
+  regroup();
   return pieces.length > 1
     ? `The pages left in ${sm.label} no longer run consecutively, so they ` +
       `became ${pieces.length} outputs.` : null;
@@ -821,24 +831,13 @@ function destOptions(selected, { includeDefault = false } = {}) {
     h += `<option value="${o.id}"${o.id === selected ? ' selected' : ''}>&rarr; ${esc(o.name)}.pdf</option>`;
   }
   h += `<option value="${DISCARD}"${selected === DISCARD ? ' selected' : ''}>discard</option>`;
-  h += '<option value="__new">+ new output…</option>';
   return h;
-}
-
-/** Resolve a destination select value, creating an output on request. */
-function resolveDest(value) {
-  if (value !== '__new') return value;
-  const name = prompt('Name for the new output PDF', `output_${state.outputs.length + 1}`);
-  if (!name) return null;
-  const id = `o${Date.now()}`;
-  state.outputs.push({ id, name: name.replace(/\.pdf$/i, '') });
-  return id;
 }
 
 /* ---------- rendering ---------- */
 
 function renderAll() {
-  for (const id of ['summary', 'parts', 'review', 'export']) $(`#${id}`).hidden = false;
+  for (const id of ['summary', 'parts', 'review']) $(`#${id}`).hidden = false;
   renderSummary();
   renderPartsAndBelow();
 }
@@ -922,6 +921,18 @@ function renderSummaryStats() {
 
 const plural = (n, one, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
 
+// inline icons, drawn in currentColor
+const ICON = {
+  grip: '<svg viewBox="0 0 10 16" width="10" height="16" aria-hidden="true"><g fill="currentColor">' +
+    '<circle cx="2.5" cy="3" r="1.4"/><circle cx="7.5" cy="3" r="1.4"/><circle cx="2.5" cy="8" r="1.4"/>' +
+    '<circle cx="7.5" cy="8" r="1.4"/><circle cx="2.5" cy="13" r="1.4"/><circle cx="7.5" cy="13" r="1.4"/></g></svg>',
+  download: '<svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" fill="none" stroke="currentColor" ' +
+    'stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v11m-5-5 5 5 5-5M5 20h14"/></svg>',
+  basket: '<svg viewBox="0 0 24 24" width="30" height="30" aria-hidden="true" fill="none" stroke="currentColor" ' +
+    'stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16M9 7V4.5h6V7m-9 0 1 13h10l1-13' +
+    'M10 11v5.5M14 11v5.5"/></svg>',
+};
+
 function renderParts() {
   $('#reset-parts').hidden = !state.tree && !state.templates.length;
   $('#parts-hint').textContent = state.templates.length
@@ -939,56 +950,17 @@ function renderParts() {
   const shown = state.parts.filter((t) => t.nSheets);
   const lanes = shown.filter((t) => t.id !== BLANK_PART && t.dest !== DISCARD);
   const trash = shown.filter((t) => t.id === BLANK_PART || t.dest === DISCARD);
-  $('#part-cards').innerHTML = lanes.map((t) => {
-    const multi = t.nodes.length > 1;
-    const one = t.nodes.length === 1 && state.tree ? t.nodes[0] : null;
-    let tree = '';
-    if (one) {
-      const kids = one.children;
-      const { blocked } = mergeSet(t.id);
-      const partners = mergePartners(t.id);
-      const canMerge = partners.length && !blocked;
-      const splitTip = kids
-        ? `halves correlate ${one.score.toFixed(2)} (near 1: same page)`
-        : 'Cannot split: one sheet, or identical sheets';
-      const mergeTip = blocked ? `Drag the other pages out of part ${blocked} first`
-        : partners.length ? `Same printed page as ${partners.join(', ')}`
-          : 'Nothing to merge with';
-      tree = `<div class="tree-actions">
-        <button class="btn ghost small" data-split="${esc(t.id)}" title="${esc(splitTip)}"${kids ? '' : ' disabled'}>split${kids ? ` <span class="score">${kids[0].members.length}+${kids[1].members.length}</span>` : ''}</button>
-        <button class="btn ghost small" data-merge="${esc(t.id)}" title="${esc(mergeTip)}"${canMerge ? '' : ' disabled'}>merge${canMerge ? ` with ${esc(partners.join(', '))}` : ''}</button>
-      </div>`;
-    }
-    const thumbs = t.nodes.map((n, j) => `<div class="thumb" draggable="true" data-node="${n.id}"
-        title="drag onto another output, + new output, or discard">
-        <img src="${t.imgs[j]}" draggable="false" alt="average of part ${esc(t.label)}${multi ? ` page ${j + 1}` : ''}">
-        ${multi ? `<span class="pg">p${j + 1}</span>` : ''}
-        <button class="zoom" data-inspect="${n.id}" title="inspect">&#10530;</button></div>`).join('');
-    const count = multi
-      ? `<span class="hint" title="complete copies">${plural(t.n, 'copy', 'copies')}</span>`
-      : `<span class="hint" title="sheets">${t.nSheets}</span>`;
-    return `<div class="part-card${multi ? ' wide' : ''}" data-drop="${esc(t.id)}" style="--c:${t.color}">
-      <div class="pages" style="--k:${Math.min(t.nodes.length, 4)}">${thumbs}</div>
-      <div class="row"><span class="tag">${esc(t.label)}</span>
-        <input type="text" class="name" data-out="${t.out}" value="${esc(outputName(t.out))}"
-          aria-label="name of part ${esc(t.label)}" title="output file name">
-        ${count}</div>
-      ${t.nIncomplete ? `<p class="warn-line">${plural(t.nIncomplete, 'incomplete copy', 'incomplete copies')}</p>` : ''}
-      ${tree}
-    </div>`;
-  }).join('');
-  const trashTiles = trash.flatMap((t) => (t.nodes.length ? t.nodes : [null]).map((n, j) => `
-    <div class="trash-tile" style="--c:${t.color}"${n ? ` draggable="true" data-node="${n.id}"
-      title="drag onto an output or + new output to use it again"` : ' title="blank pages"'}>
+  $('#part-cards').innerHTML = lanes.map(cardHtml).join('');
+  const nd = state.sheets.filter((s) => destOf(s) === DISCARD).length;
+  const tiles = trash.flatMap((t) => (t.nodes.length ? t.nodes : [null]).map((n, j) => `
+    <div class="thumb mini" style="--c:${t.color}"${n ? ` data-node="${n.id}"
+      title="drag onto a card or empty space to use it again"` : ' title="blank pages"'}>
       <img src="${t.imgs[j]}" draggable="false" alt="average of ${n ? `part ${esc(t.label)}` : 'blank pages'}">
-      <span class="tag">${esc(t.label)}</span> <span class="hint">${t.nSheets}</span>
+      <span class="pg">${esc(t.label)} · ${t.nSheets}</span>
       <button class="zoom" data-inspect="${n ? n.id : BLANK}" title="inspect">&#10530;</button></div>`)).join('');
-  $('#part-zones').innerHTML = `
-    <div class="zone" data-drop="new"><b>+ new output</b>
-      <span class="hint">drop a page here to make it its own PDF</span></div>
-    <div class="zone trash" data-drop="trash"><b>discard</b>
-      <span class="hint">pages here go to no PDF</span>
-      <div class="trash-tiles">${trashTiles}</div></div>`;
+  $('#part-trash').innerHTML = `<div class="basket">${ICON.basket}
+      <span>discard${nd ? ` · ${plural(nd, 'sheet')}` : ''}</span></div>
+    <div class="trash-tiles">${tiles}</div>`;
   for (const inp of document.querySelectorAll('#part-cards input.name')) {
     inp.onchange = () => {
       const o = state.outputs.find((x) => x.id === inp.dataset.out);
@@ -1002,56 +974,265 @@ function renderParts() {
   for (const b of document.querySelectorAll('#part-cards [data-merge]')) {
     b.onclick = () => mergePart(b.dataset.merge);
   }
+  for (const b of document.querySelectorAll('#part-cards [data-dl]')) {
+    b.onclick = () => exportOutput(b.dataset.dl, b);
+  }
   for (const b of document.querySelectorAll('#parts [data-inspect]')) {
     b.onclick = () => openInspector(+b.dataset.inspect);
   }
   wireDrag();
 }
 
+/** Render one lane: an output PDF's card, its pages in staple order. */
+function cardHtml(t) {
+  const multi = t.nodes.length > 1;
+  const one = t.nodes.length === 1 && state.tree ? t.nodes[0] : null;
+  let tree = '';
+  if (one) {
+    const kids = one.children;
+    const { blocked } = mergeSet(t.id);
+    const partners = mergePartners(t.id);
+    const canMerge = partners.length && !blocked;
+    const splitTip = kids
+      ? `halves correlate ${one.score.toFixed(2)} (near 1: same page)`
+      : 'Cannot split: one sheet, or identical sheets';
+    const mergeTip = blocked ? `Drag the other pages out of part ${blocked} first`
+      : partners.length ? `Same printed page as ${partners.join(', ')}`
+        : 'Nothing to merge with';
+    tree = `<span class="tree-actions">
+      <button class="btn ghost small" data-split="${esc(t.id)}" title="${esc(splitTip)}"${kids ? '' : ' disabled'}>split${kids ? ` <span class="score">${kids[0].members.length}+${kids[1].members.length}</span>` : ''}</button>
+      <button class="btn ghost small" data-merge="${esc(t.id)}" title="${esc(mergeTip)}"${canMerge ? '' : ' disabled'}>merge${canMerge ? ` with ${esc(partners.join(', '))}` : ''}</button>
+    </span>`;
+  }
+  const tiles = t.nodes.map((n, j) => `<div class="thumb" data-node="${n.id}"
+      title="drag onto another card, empty space, or the basket">
+      <img src="${t.imgs[j]}" draggable="false" alt="average of part ${esc(t.label)}${multi ? ` page ${j + 1}` : ''}">
+      ${multi ? `<span class="pg">p${j + 1}</span>` : ''}
+      <button class="zoom" data-inspect="${n.id}" title="inspect">&#10530;</button></div>`).join('');
+  const name = outputName(t.out);
+  const nPages = pagesFor(t.out).length;
+  const nOut = state.sheets.filter((s) => destOf(s) === t.out).length;
+  return `<div class="part-card" data-drop="${esc(t.id)}" style="--c:${t.color}">
+    <div class="card-head">
+      <span class="grip" title="drag to reorder">${ICON.grip}</span>
+      <span class="tag">${esc(t.label)}</span>
+      <input type="text" class="name" data-out="${t.out}" value="${esc(name)}"
+        aria-label="name of part ${esc(t.label)}" title="output file name">
+      <button class="icon dl" data-dl="${t.out}"${nPages ? '' : ' disabled'}
+        title="download ${esc(name)}.pdf: ${plural(nOut, 'sheet')}, ${plural(nPages, 'page')}"
+        aria-label="download ${esc(name)}.pdf">${ICON.download}</button>
+    </div>
+    <div class="pages">${tiles}</div>
+    <div class="card-foot">
+      <span>${multi ? plural(t.n, 'copy', 'copies') : plural(t.nSheets, 'sheet')}</span>
+      ${t.nIncomplete ? `<span class="warn">${t.nIncomplete} incomplete</span>` : ''}
+      ${tree}
+    </div>
+  </div>`;
+}
+
+/* ---------- dragging pages and cards ---------- */
+
+// pointer travel, in px, before a press becomes a drag
+const DRAG_PX = 4;
+
 /**
- * Wire page tiles to drag onto lanes and the new-output and discard zones.
+ * Make page tiles and card grips draggable.
  *
- * On drag start every target is marked can or cannot (with the reason,
- * see dropTargets); only a can target takes the drop.
+ * Pointer events rather than HTML5 drag and drop, so the stand-in follows
+ * the pointer, the preview updates every frame, and touch works too.
  */
 function wireDrag() {
-  const targets = [...document.querySelectorAll('#parts [data-drop]')];
-  let drag = null;
-  const ok = (z) => drag && drag.why.get(z.dataset.drop) === null;
   for (const el of document.querySelectorAll('#parts [data-node]')) {
-    el.ondragstart = (e) => {
-      drag = { id: +el.dataset.node, why: dropTargets(+el.dataset.node) };
-      e.dataTransfer.setData('text/plain', el.dataset.node);
-      e.dataTransfer.effectAllowed = 'move';
-      el.classList.add('dragged');
-      for (const z of targets) {
-        const why = drag.why.get(z.dataset.drop);
-        z.classList.toggle('can', why === null);
-        z.classList.toggle('cannot', typeof why === 'string');
-        z.dataset.why = why ?? '';
-      }
-    };
-    el.ondragend = () => {
-      drag = null;
-      el.classList.remove('dragged');
-      for (const z of targets) z.classList.remove('can', 'cannot', 'over');
-    };
+    el.onpointerdown = (e) => press(e, () => dragPage(el, e));
   }
-  for (const z of targets) {
-    z.ondragover = (e) => {
-      if (!ok(z)) return;
-      e.preventDefault();
-      z.classList.add('over');
-    };
-    z.ondragleave = (e) => { if (!z.contains(e.relatedTarget)) z.classList.remove('over'); };
-    z.ondrop = (e) => {
-      e.preventDefault();
-      if (!ok(z)) return;
-      state.partsMsg = movePage(drag.id, z.dataset.drop);
-      drag = null;
+  for (const c of document.querySelectorAll('#part-cards .part-card')) {
+    c.querySelector('.grip').onpointerdown = (e) => press(e, () => dragCard(c, e));
+  }
+}
+
+/** Start a drag once a primary press moves DRAG_PX; a still press stays a click. */
+function press(e, start) {
+  if (e.button !== 0 || e.target.closest('button, input')) return;
+  e.preventDefault();
+  const [x0, y0] = [e.clientX, e.clientY];
+  const move = (m) => {
+    if (Math.hypot(m.clientX - x0, m.clientY - y0) < DRAG_PX) return;
+    stop();
+    start(m);
+  };
+  const stop = () => {
+    removeEventListener('pointermove', move);
+    removeEventListener('pointerup', stop);
+  };
+  addEventListener('pointermove', move);
+  addEventListener('pointerup', stop);
+}
+
+/**
+ * Run one drag: a ghost follows the pointer and over(x, y) updates the
+ * preview once per frame; release calls drop(target), Escape cancel().
+ * Near the window's top or bottom edge the page scrolls.
+ */
+function session(e, ghost, { over, drop, cancel }) {
+  document.body.append(ghost);
+  document.body.classList.add('dragging');
+  let [x, y] = [e.clientX, e.clientY];
+  let raf = 0;
+  let target = null;
+  const frame = () => {
+    raf = 0;
+    ghost.style.transform = `translate(${x}px, ${y}px)`;
+    target = over(x, y);
+    const edge = y < 48 ? -12 : y > innerHeight - 48 ? 12 : 0;
+    if (edge) {
+      scrollBy(0, edge);
+      raf = requestAnimationFrame(frame);
+    }
+  };
+  const move = (m) => {
+    [x, y] = [m.clientX, m.clientY];
+    if (!raf) raf = requestAnimationFrame(frame);
+  };
+  const end = () => {
+    cancelAnimationFrame(raf);
+    removeEventListener('pointermove', move);
+    removeEventListener('pointerup', up);
+    removeEventListener('keydown', key);
+    ghost.remove();
+    document.body.classList.remove('dragging');
+    // the release must not also click what it lands on; that click, if
+    // any, comes in this same input task, before the timeout
+    addEventListener('click', swallow, true);
+    setTimeout(() => removeEventListener('click', swallow, true), 0);
+  };
+  const swallow = (c) => { c.stopPropagation(); c.preventDefault(); };
+  const up = () => { end(); drop(target); };
+  const key = (k) => { if (k.key === 'Escape') { end(); cancel(); } };
+  addEventListener('pointermove', move);
+  addEventListener('pointerup', up);
+  addEventListener('keydown', key);
+  frame();
+}
+
+/**
+ * Drag a page tile: its card closes up behind it, and a small stand-in
+ * shows where it would land (in a card at its scan-order place, in a new
+ * card at the end, or in the basket); cards it cannot join are dimmed.
+ */
+function dragPage(el, e) {
+  const id = +el.dataset.node;
+  const n = layoutNode(id);
+  const why = dropTargets(id);
+  // where the page would sit in each card it can join
+  const at = new Map([...why].filter(([k, w]) => w === null && k !== 'new' && k !== 'trash')
+    .map(([k]) => [k, pageOrder([...groupOf(k), n]).order.indexOf(n)]));
+  const cards = [...document.querySelectorAll('#part-cards .part-card')];
+  for (const c of cards) c.classList.toggle('cannot', typeof why.get(c.dataset.drop) === 'string');
+  const img = el.querySelector('img').src;
+  const ghost = document.createElement('div');
+  ghost.className = 'drag-ghost';
+  ghost.innerHTML = `<img src="${img}" alt=""><span></span>`;
+  const caption = ghost.querySelector('span');
+  const stand = document.createElement('div');
+  stand.className = 'thumb stand';
+  stand.innerHTML = `<img src="${img}" alt="">`;
+  const newCard = document.createElement('div');
+  newCard.className = 'part-card stand-card';
+  let shown;
+  const show = (t) => {
+    if (t === shown) return;
+    shown = t;
+    stand.remove();
+    newCard.remove();
+    el.classList.toggle('lifted', t !== null);
+    for (const c of cards) c.classList.toggle('over', c.dataset.drop === t);
+    $('#part-trash').classList.toggle('over', t === 'trash');
+    if (t === 'trash') $('#part-trash .trash-tiles').append(stand);
+    else if (t === 'new') {
+      newCard.innerHTML = '<div class="pages"></div><div class="card-foot">new part</div>';
+      newCard.querySelector('.pages').append(stand);
+      $('#part-cards').append(newCard);
+    } else if (t !== null) {
+      const pages = cards.find((c) => c.dataset.drop === t).querySelector('.pages');
+      pages.insertBefore(stand, pages.children[at.get(t)] ?? null);
+    }
+  };
+  const restore = () => {
+    show(null);
+    for (const c of cards) c.classList.remove('cannot', 'over');
+  };
+  session(e, ghost, {
+    over(x, y) {
+      const hit = document.elementFromPoint(x, y);
+      const card = hit?.closest('#part-cards .part-card:not(.stand-card)');
+      let t = null;
+      let note = '';
+      if (card) {
+        const w = why.get(card.dataset.drop);
+        if (w === null) t = card.dataset.drop;
+        else if (w) note = `can't staple here: ${w}`;
+      } else if (hit?.closest('#part-trash')) t = why.has('trash') ? 'trash' : null;
+      else if (hit?.closest('#parts, .stand-card')) t = why.has('new') ? 'new' : null;
+      show(t);
+      caption.textContent = t === 'trash' ? 'discard' : t === 'new' ? 'new part'
+        : t ? `staple into ${outputName(state.meta.get(t).out)}` : note;
+      ghost.classList.toggle('no', !!note);
+      return t;
+    },
+    drop(t) {
+      restore();
+      if (t === null) return;
+      state.partsMsg = movePage(id, t);
       renderPartsAndBelow();
-    };
-  }
+    },
+    cancel: restore,
+  });
+}
+
+/**
+ * Drag a card by its grip to reorder the cards (and so the downloads); a
+ * gap the card's size opens where it would land.
+ */
+function dragCard(card, e) {
+  const box = $('#part-cards');
+  const gap = document.createElement('div');
+  gap.className = 'part-card stand-card';
+  gap.style.width = `${card.offsetWidth}px`;
+  gap.style.height = `${card.offsetHeight}px`;
+  const ghost = document.createElement('div');
+  ghost.className = 'drag-ghost card-ghost';
+  ghost.style.setProperty('--c', card.style.getPropertyValue('--c'));
+  ghost.innerHTML = `<span class="tag">${esc(card.querySelector('.tag').textContent)}</span>
+    <span>${esc(card.querySelector('input.name').value)}</span>`;
+  card.before(gap);
+  card.classList.add('lifted-card');
+  const restore = () => {
+    gap.remove();
+    card.classList.remove('lifted-card');
+  };
+  session(e, ghost, {
+    over(x, y) {
+      const hit = document.elementFromPoint(x, y)?.closest('#part-cards .part-card');
+      if (hit && hit !== gap) {
+        const r = hit.getBoundingClientRect();
+        const before = x < r.left + r.width / 2;
+        if (before && hit.previousElementSibling !== gap) hit.before(gap);
+        if (!before && hit.nextElementSibling !== gap) hit.after(gap);
+      }
+      return true;
+    },
+    drop() {
+      const keys = [...box.children].filter((c) => c !== card)
+        .map((c) => (c === gap ? card.dataset.drop : c.dataset.drop));
+      restore();
+      const lanes = keys.map(groupOf);
+      state.groups = [...lanes, ...state.groups.filter((g) => !lanes.includes(g))];
+      regroup();
+      renderPartsAndBelow();
+    },
+    cancel: restore,
+  });
 }
 
 function visibleSheets() {
@@ -1145,12 +1326,10 @@ function renderBulk() {
     <button class="btn ghost" id="bulk-clear">clear selection</button>`;
   $('#bulk-dest').onchange = (e) => {
     const v = e.target.value;
-    const d = v === '__default' ? null : resolveDest(v);
-    if (v !== '__default' && !d) return;
+    const d = v === '__default' ? null : v;
     for (const i of state.selected) routeCopy(i, d);
     state.selected.clear();
-    renderReview();
-    renderExport();
+    renderPartsAndBelow();
   };
   $('#bulk-swap').onclick = () => {
     for (const i of state.selected) swap(state.sheets[i]);
@@ -1222,10 +1401,8 @@ async function openPreview(i) {
   const sel = $('#pv-dest');
   sel.innerHTML = destOptions(destOf(s));
   sel.onchange = () => {
-    const d = resolveDest(sel.value);
-    if (d) routeCopy(i, d === t.dest ? null : d);
-    renderReview();
-    renderExport();
+    routeCopy(i, sel.value === t.dest ? null : sel.value);
+    renderPartsAndBelow();
     openPreview(i);
   };
   $('#pv-back').parentElement.hidden = s.back === null;
@@ -1475,61 +1652,39 @@ function copyWhere(c) {
   return `${f.name} p${lo}${hi > lo ? `-${hi}` : ''}${ps.some((p) => p.file !== f) ? ' …' : ''}`;
 }
 
+/** Render what sits under the cards: missing pages, download all, export options. */
 function renderExport() {
-  const inUse = (o) => state.parts.some((t) => t.dest === o.id) || pagesFor(o.id).length;
-  const rows = liveOutputs().filter(inUse).map((o) => {
-    const n = state.sheets.filter((s) => destOf(s) === o.id).length;
-    const colors = state.parts.filter((t) => t.dest === o.id).map((t) => t.color);
-    return `<div class="out-row" style="--c:${colors[0] ?? 'var(--line)'}">
-      <span class="dot"></span>
-      ${o.part === undefined
-    ? `<input type="text" value="${esc(o.name)}" data-o="${o.id}" aria-label="output name">`
-    : `<span class="out-name" title="rename on its part card">${esc(o.name)}.pdf</span>`}
-      <span class="count">${plural(n, 'sheet')} · ${pagesFor(o.id).length} pages</span>
-      <button class="btn" data-dl="${o.id}"${n ? '' : ' disabled'}>download .pdf</button>
-    </div>`;
-  }).join('');
-  const nd = state.sheets.filter((s) => destOf(s) === DISCARD).length;
   const miss = missingCopies();
-  const missRows = miss.map(({ c, missing }) => {
-    const t = c.part;
-    return `<li><button class="link" data-sheet="${c.sheets[0]}">${esc(copyWhere(c))}</button>
+  const rows = miss.map(({ c, missing }) => `<li>
+      <button class="link" data-sheet="${c.sheets[0]}">${esc(copyWhere(c))}</button>
       ${esc(outputName(destOf(state.sheets[c.sheets[0]])))}: missing
-      ${missing.map((j) => `p${j + 1}`).join(', ')} of ${t.nodes.length}</li>`;
-  }).join('');
-  $('#outputs').innerHTML = `${rows}
-    <p class="hint">${plural(nd, 'sheet')} discarded.</p>
+      ${missing.map((j) => `p${j + 1}`).join(', ')} of ${c.part.nodes.length}</li>`).join('');
+  $('#part-export').innerHTML = `
     ${miss.length ? `<div class="missing"><b>Missing pages</b>
       <span class="hint">${plural(miss.length, 'incomplete copy', 'incomplete copies')}; click one to see it</span>
-      <ul>${missRows}</ul></div>` : ''}
+      <ul>${rows}</ul></div>` : ''}
     <div class="out-actions">
-      <button class="btn" id="dl-all">download all</button>
+      <button class="btn" id="dl-all">${ICON.download} download all</button>
       ${miss.length ? `<label><input type="checkbox" id="pad-missing"${state.padMissing ? ' checked' : ''}>
         fill each missing page with a blank one (every copy the same length)</label>` : ''}
       ${blankBacks() ? `<label><input type="checkbox" id="omit-blank"${state.omitBlankBacks ? ' checked' : ''}>
         leave out blank backs (Gradescope expects 2 pages per sheet)</label>` : ''}
     </div>`;
-  for (const b of document.querySelectorAll('#outputs [data-sheet]')) {
+  for (const b of document.querySelectorAll('#part-export [data-sheet]')) {
     b.onclick = () => openPreview(+b.dataset.sheet);
   }
-  if ($('#pad-missing')) {
-    $('#pad-missing').onchange = (e) => { state.padMissing = e.target.checked; renderExport(); };
-  }
-  for (const inp of document.querySelectorAll('#outputs input[type=text]')) {
-    inp.onchange = () => {
-      state.outputs.find((o) => o.id === inp.dataset.o).name = inp.value.replace(/\.pdf$/i, '') || 'output';
-      renderParts();
-      renderReview();
-    };
-  }
-  for (const b of document.querySelectorAll('#outputs [data-dl]')) {
-    b.onclick = () => exportOutput(b.dataset.dl, b);
-  }
   $('#dl-all').onclick = async () => {
-    for (const o of state.outputs) if (pagesFor(o.id).length) await exportOutput(o.id);
+    const b = $('#dl-all');
+    b.disabled = true;
+    for (const o of liveOutputs()) if (pagesFor(o.id).length) await exportOutput(o.id);
+    b.disabled = false;
   };
+  // page counts on the cards' download buttons change with these
+  if ($('#pad-missing')) {
+    $('#pad-missing').onchange = (e) => { state.padMissing = e.target.checked; renderParts(); renderExport(); };
+  }
   if ($('#omit-blank')) {
-    $('#omit-blank').onchange = (e) => { state.omitBlankBacks = e.target.checked; renderExport(); };
+    $('#omit-blank').onchange = (e) => { state.omitBlankBacks = e.target.checked; renderParts(); renderExport(); };
   }
 }
 
@@ -1544,7 +1699,7 @@ async function libDoc(file) {
 async function exportOutput(outId, button) {
   const o = state.outputs.find((x) => x.id === outId);
   const order = pagesFor(outId);
-  if (button) { button.disabled = true; button.textContent = 'building…'; }
+  if (button) { button.disabled = true; button.classList.add('busy'); }
   const out = await PDFLib.PDFDocument.create();
   const byFile = new Map();
   for (const pi of order) {
@@ -1572,7 +1727,7 @@ async function exportOutput(outId, button) {
   a.remove();
   setTimeout(() => URL.revokeObjectURL(a.href), 10000);
   state.lastExport = { name: o.name, pages: order.length, bytes: bytes.length };
-  if (button) { button.disabled = false; button.textContent = 'download .pdf'; }
+  if (button) { button.disabled = false; button.classList.remove('busy'); }
 }
 
 /* ---------- wiring ---------- */

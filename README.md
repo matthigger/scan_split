@@ -5,7 +5,7 @@ Sort scanned exam pages into one PDF per question, in the browser.
 **Use it:** https://matthigger.github.io/scan_split/
 
 Drop in the scanner's PDFs.
-The page learns the layout from the scans themselves (no template, header, or page count to configure) and groups pages into parts, each its own named output PDF; drag pages between parts, into a new one, or to discard, and route any single copy elsewhere.
+The page learns the layout from the scans themselves (no template, header, or page count to configure) and groups pages into parts, each its own named output PDF with a download button; drag pages between parts, onto empty space for a new one, or into the basket to discard them, drag parts to reorder them, and route any single copy elsewhere.
 A part is one or more pages bound for one output (a question, even one spanning pages); a copy is one student's pages of it.
 Optionally add page templates (the blank exam: one PDF of the whole exam, or one PDF per question): each sheet is then sorted to its closest template page, and any group of sheets no template matches is set aside as its own part.
 Several template PDFs make a part each, named after the file; a single PDF makes a part per page, which you staple into multi-page parts by dragging.
@@ -24,7 +24,7 @@ Nothing is uploaded; PDFs stay on your machine.
    Each sheet then goes to its closest layout, allowing a few mm of scanner offset.
    The splits form a tree built once: the default layouts stop where a split would only separate handwriting, and each one-page part's card can split further or merge back without resetting any routing.
 4. Parts start as one layout each (or one template file each); each part's card is its output PDF.
-   Dragging a page onto another card staples it there, onto *+ new output* makes it a part of its own, and onto *discard* leaves it out of every output (drag it back out to restore it).
+   Dragging a page onto another card staples it there, onto empty space in the parts area makes it a part of its own, and into the basket leaves it out of every output (drag it back out to restore it); while dragging, a stand-in shows where the page would land and cards it cannot join are dimmed. Cards reorder by their handle.
    A part keeps its name as pages come and go; one left unable to stay stapled (its middle page taken) falls apart into parts that can.
    Stapling is not merging: merge says two groups are the same printed page, staple says they are consecutive pages of one copy.
    A multi-page part's pages are assumed contiguous in the input: the stack is cut into copies, runs of consecutive sheets stepping through the part's pages in order (blank sheets skipped), and a run that breaks off or starts mid-part is flagged as an incomplete copy.
@@ -37,7 +37,7 @@ Within a template's sheets, a group (a genuine split of the same tree) whose ave
 
 Outputs keep the stack order, so each copy exports as a contiguous run (student A's pages of the part, then student B's, …), even when a student's other questions are elsewhere in the stack.
 Re-routing any sheet of a multi-page copy moves the whole copy.
-Incomplete copies are listed under Download with where they sit in the input and which pages they lack; by default each missing page exports as a blank page (with a blank back in blank-back mode), so every copy has its part's full page count, and this can be switched off.
+Incomplete copies are listed under the parts with where they sit in the input and which pages they lack; by default each missing page exports as a blank page (with a blank back in blank-back mode), so every copy has its part's full page count, and this can be switched off.
 
 `proto/validate.py` is the reference implementation (its duplex test is broader than blank-back mode) and its validation on real scans (shuffled sheets, flipped sheets, missing sheets, simulated colored paper).
 
