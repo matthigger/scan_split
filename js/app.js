@@ -44,6 +44,12 @@ const MATCH_LO = 0.65;
 const MATCH_GAP = 0.12;
 // smaller groups are not judged: their average still carries handwriting
 const MIN_JUDGE = 5;
+// layouts correlating above this are the same printed page (a cover shared
+// by two versions of a quiz): no image can tell them apart
+const TWIN = 0.99;
+// ink levels below the paper tone kept in features (see clip): above a
+// tinted paper's texture, below the white of a colored sheet's cut corner
+const PAPER_SLACK = 16;
 const TPL_BASE = 100000;
 const STRAY_BASE = 200000;
 
@@ -154,12 +160,30 @@ async function renderPage(file, idx) {
   page.cleanup();
   const blob = await new Promise((r) => c.toBlob(r, 'image/jpeg', 0.85));
   // stretch to a fixed grid so every page's feature has the same length
-  const ink = inkOf(c, TW, TH);
-  const { v, energy } = P.featurize(P.downsample(ink, TW, TH, DOWN));
+  const { ink: raw, paper } = inkOf(c, TW, TH);
+  const ink = clip(raw, paper - PAPER_SLACK);
+  const { v } = P.featurize(P.downsample(ink, TW, TH, DOWN));
+  const { energy } = P.featurize(P.downsample(clip(raw, paper), TW, TH, DOWN));
   return { file, idx, thumb: URL.createObjectURL(blob), v, energy, ink };
 }
 
-/** Read a canvas, stretched to (h, w), as ink (255 - luma). */
+/**
+ * Subtract a floor from ink, so anything lighter is no ink.
+ *
+ * On colored paper, the white scanner bed past a cut corner and the
+ * scanner's light shading bands would otherwise read as ink: blank backs
+ * look inked and every page matches white templates poorly. Features clip
+ * PAPER_SLACK below the paper tone, keeping faint paper texture (white
+ * paper is untouched); blank detection clips at the paper tone itself, as a
+ * page is blank when nothing on it is darker than its paper.
+ */
+const clip = (ink, floor) => ink.map((x) => Math.max(0, x - Math.max(0, floor)));
+
+/**
+ * Read a canvas, stretched to (h, w), as ink (255 - luma).
+ * @returns {{ink: Uint8Array, paper: number}} ink (h * w,); paper, the
+ *   page's median ink, is its paper tone
+ */
 function inkOf(src, w, h) {
   const f = document.createElement('canvas');
   f.width = w;
@@ -168,11 +192,15 @@ function inkOf(src, w, h) {
   ctx.drawImage(src, 0, 0, w, h);
   const rgba = ctx.getImageData(0, 0, w, h).data;
   const ink = new Uint8Array(w * h);
+  const hist = new Uint32Array(256);
   for (let i = 0; i < ink.length; i++) {
     ink[i] = 255 - Math.round(0.299 * rgba[4 * i] + 0.587 * rgba[4 * i + 1] +
       0.114 * rgba[4 * i + 2]);
+    hist[ink[i]]++;
   }
-  return ink;
+  let paper = 0;
+  for (let c = hist[0]; c < ink.length / 2; c += hist[++paper]);
+  return { ink, paper };
 }
 
 /* ---------- analysis ---------- */
@@ -255,21 +283,33 @@ function nearest(v, cands) {
 /**
  * Sort sheet fronts to templates, setting aside groups no template matches.
  *
- * Each front goes to its nearest template. A tree over each template's
- * fronts is walked down its genuine splits (halves that differ in printed
- * content, as in autoCut); a resulting group big enough to judge is set
- * aside when its average matches the template poorly, or clearly worse than
- * the template's best group (another version of the same question). The
- * set-aside fronts are pooled and grouped by their own learned tree.
+ * Each front goes to its nearest template; among twin templates (TWIN),
+ * to the one its neighbouring sheets continue, as a copy's pages are
+ * consecutive. A tree over each template's fronts is walked down its
+ * genuine splits (halves that differ in printed content, as in autoCut); a
+ * resulting group big enough to judge is set aside when its average matches
+ * the template poorly, or clearly worse than the template's best group
+ * (another version of the same question). The set-aside fronts are pooled
+ * and grouped by their own learned tree.
  *
- * @param {number[]} idx page indices of non-blank sheet fronts
+ * @param {number[]} idx page indices of non-blank sheet fronts, stack order
  */
 function templateCut(idx) {
   const pages = state.pages;
   const F = pages.map((p) => p.v);
   const T = state.templates;
+  const near = idx.map((p) => nearest(F[p], T.map((t) => t.v)));
+  const twins = T.map((t) => T.flatMap((u, j) => (P.shiftDot(t.v, u.v) > TWIN ? [j] : [])));
+  // template k is the page after template j of the same file
+  const follows = (j, k) => k === j + 1 && T[k].file === T[j].file;
+  near.forEach((k, a) => {
+    if (twins[k].length < 2) return;
+    const fit = (j) => (a + 1 < idx.length && follows(j, near[a + 1])) +
+      (a > 0 && follows(near[a - 1], j));
+    near[a] = twins[k].reduce((b, j) => (fit(j) > fit(b) ? j : b), k);
+  });
   const groups = T.map(() => []);
-  for (const p of idx) groups[nearest(F[p], T.map((t) => t.v))].push(p);
+  idx.forEach((p, a) => groups[near[a]].push(p));
   const aside = new Set();
   // per template, the groups judged and their scores (for inspection)
   state.tplLeaves = [];
@@ -371,12 +411,15 @@ function assign() {
   const cut = state.groups.flat();
   const owner = new Map();
   for (const node of cut) for (const p of node.members) owner.set(p, node);
+  // a sheet's margin is over the other layouts, twins aside (TWIN)
+  const rivals = new Map(cut.map((n) => [n,
+    cut.filter((m) => m !== n && P.dot(n.cons, m.cons) <= TWIN)]));
   for (const s of state.sheets) {
     const node = owner.get(s.front);
     if (!node) { s.layout = BLANK; s.margin = 1; continue; }
     s.layout = node.id;
     const v = pages[s.front].v;
-    const others = cut.filter((m) => m !== node);
+    const others = rivals.get(node);
     if (!others.length) { s.margin = P.dot(v, node.cons); continue; }
     s.margin = P.dot(v, node.cons) - Math.max(...others.map((m) => P.dot(v, m.cons)));
     if (s.margin < LOW_MARGIN) {
@@ -663,7 +706,12 @@ const destOf = (s) => s.dest ?? partOf(s).dest;
 const outputName = (d) => (d === DISCARD ? 'discard'
   : state.outputs.find((o) => o.id === d)?.name ?? '?');
 const incomplete = (s) => s.copy >= 0 && !state.copies[s.copy].complete;
-const flagged = (s) => s.flipped || incomplete(s) || (s.layout !== BLANK && s.margin < LOW_MARGIN);
+// a complete multi-page copy vouches for its sheets: a sheet sorted to the
+// wrong version of its page would have broken the copy
+const vouched = (s) => s.copy >= 0 && state.copies[s.copy].complete &&
+  state.copies[s.copy].part.nodes.length > 1;
+const flagged = (s) => s.flipped || incomplete(s) ||
+  (s.layout !== BLANK && s.margin < LOW_MARGIN && !vouched(s));
 const workOnBack = (s) => s.back !== null && !state.pages[s.back].blank;
 /** Label a page of a part: the part's label, plus the page if it has several. */
 const pageLabel = (t, page) => (t.nodes.length > 1 ? `${t.label} p${page + 1}` : t.label);
@@ -1222,7 +1270,8 @@ async function hiConsensus(key, members, cons) {
     ctx.fillStyle = '#fff';
     ctx.fillRect(0, 0, tmp.width, tmp.height);
     await page.render({ canvasContext: ctx, viewport: vp }).promise;
-    let ink = inkOf(tmp, HI_W, h);
+    const { ink: raw, paper } = inkOf(tmp, HI_W, h);
+    let ink = clip(raw, paper - PAPER_SLACK);
     if (cons) {
       // page content sits (dy, dx) grid cells from the consensus; undo it
       const { dy, dx } = P.bestShift(cons, p.v, 4);

@@ -15,8 +15,8 @@ Nothing is uploaded; PDFs stay on your machine.
 
 ## How it matches pages
 
-1. Each page is rendered small, inverted, blurred, high-passed (removes paper tint and scanner shading) and normalized; two pages' similarity is the dot product (normalized cross-correlation).
-2. Near-empty pages are marked blank.
+1. Each page is rendered small, inverted, clipped just below its paper tone (the page's median, so the white scanner bed past a colored sheet's cut corner is not ink), blurred, high-passed (removes paper tint and scanner shading) and normalized; two pages' similarity is the dot product (normalized cross-correlation).
+2. Near-empty pages (next to nothing darker than their paper) are marked blank.
    In blank-back mode (detected when at least half of each file's page pairs 1-2, 3-4, … have a blank side; settable by hand) the scanner also captured each sheet's blank back, so consecutive pages pair into sheets: the front is the side with ink, and the back travels with it, even when a sheet was fed back-first.
    With blank-back mode off (backs carry questions or work), every page stands alone.
 3. Fronts are clustered into layouts, one per printed page, by bisecting k-means, splitting while the two halves' average images differ.
@@ -26,10 +26,12 @@ Nothing is uploaded; PDFs stay on your machine.
 4. Parts start as one layout each (or one template file each) and can be stapled (*staple to…*) into multi-page parts and unstapled again.
    Stapling is not merging: merge says two groups are the same printed page, staple says they are consecutive pages of one copy.
    A multi-page part's pages are assumed contiguous in the input: the stack is cut into copies, runs of consecutive sheets stepping through the part's pages in order (blank sheets skipped), and a run that breaks off or starts mid-part is flagged as an incomplete copy.
+   A complete copy vouches for its sheets, so a close call between versions of a page is flagged only outside one.
    Stapled pages take the templates' order, or else the order in which they most often follow each other in the stack; parts that never sit next to each other cannot be stapled.
    The comparison grid is fine enough to separate versions of one question that differ only in wording and numbers (quiz a vs b).
 
-With templates, each sheet goes to its nearest template; within a template's sheets, a group (a genuine split of the same tree) whose average matches the template poorly, or clearly worse than the template's best group, is set aside, and set-aside sheets are grouped by their own tree.
+With templates, each sheet goes to its nearest template; a page printed alike in several templates (a cover shared by quiz a and b) goes to the template its neighbouring sheets continue.
+Within a template's sheets, a group (a genuine split of the same tree) whose average matches the template poorly, or clearly worse than the template's best group, is set aside, and set-aside sheets are grouped by their own tree.
 
 Outputs keep the stack order, so each copy exports as a contiguous run (student A's pages of the part, then student B's, …), even when a student's other questions are elsewhere in the stack.
 Re-routing any sheet of a multi-page copy moves the whole copy.
