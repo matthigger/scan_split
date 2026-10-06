@@ -1454,6 +1454,18 @@ document.querySelectorAll('[data-example]').forEach((b) => {
 });
 $('#clear-all').onclick = () => { location.href = location.pathname; };
 
+/* ---------- footer ---------- */
+
+// BUILD comes from js/version.js, which the Pages workflow stamps at deploy
+if (BUILD) {
+  const when = new Date(BUILD.time).toLocaleString('en-US',
+    { dateStyle: 'medium', timeStyle: 'short' });
+  $('#build').innerHTML = `build <a href="https://github.com/matthigger/` +
+    `scan_split/commit/${BUILD.sha}">${BUILD.sha.slice(0, 7)}</a>, ${when}`;
+} else {
+  $('#build').textContent = 'local copy';
+}
+
 const params = new URLSearchParams(location.search);
 (async () => {
   if (params.get('tpl')) await addTemplates(await fetchItems(params.get('tpl').split(',')));

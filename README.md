@@ -40,6 +40,7 @@ Re-routing any sheet of a multi-page copy moves the whole copy.
 
 - `index.html`, `style.css`, `js/app.js`: interface
 - `js/pipeline.js`: matching (port of `proto/validate.py`)
+- `js/version.js`: footer build stamp; `.github/workflows/pages.yml` overwrites it with the commit and build time at deploy (`null` locally)
 - `vendor/`: pdf.js 4.10.38 and pdf-lib 1.17.1, served locally
 - `proto/make_test_set.py`: shuffle scans into one test stack plus its expected sorted outputs (needs pypdf)
 - `demo/`: the examples: two fake scanned stacks of a fictional DEMO 101 quiz in two versions with a two-page Q3, printed one-sided (24 students) and double-sided (16 students), with generated handwriting (`src/make_scans.py`, needs handwriting .ttf fonts from Google Fonts, OFL or Apache 2.0, listed in its docstring); `*_key.csv` are their answer keys; `templates/` are the blank pages they are generated from (`src/page.tex`, `src/build.sh`); doodles come from the Quick, Draw! Dataset by Google, CC BY 4.0 (`src/doodles.json`, fetched by `src/fetch_doodles.py`)

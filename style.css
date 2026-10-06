@@ -40,8 +40,10 @@ body {
   color: var(--ink);
   font: 15px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif;
 }
-header, main { max-width: 1200px; margin: 0 auto; padding: 0 16px; }
+header, main, footer { max-width: 1200px; margin: 0 auto; padding: 0 16px; }
 header { padding-top: 28px; }
+footer { padding-top: 12px; padding-bottom: 28px; color: var(--muted); font-size: 13.5px; }
+footer a { color: inherit; }
 h1 { margin: 0; font-size: 26px; letter-spacing: -0.01em; }
 h2 { font-size: 18px; margin: 28px 0 4px; }
 .sub, .hint { color: var(--muted); margin: 4px 0 12px; }
