@@ -51,12 +51,14 @@
     <div class="h-row"><h2>Parts</h2>
       <button class="btn ghost small" id="reset-parts">reset to automatic</button></div>
     <p class="hint" id="parts-hint"></p>
-    <p class="note"><b>Multi-page parts.</b> Use <i>staple to…</i> when a
-      question spans pages. Each copy (one student's pages of a part) must be
-      contiguous in the scans and in the same order, or it is flagged
-      incomplete.</p>
+    <p class="note"><b>Each card is one output PDF.</b> Drag a page onto
+      another card to staple it there (each student's pages stay in scan
+      order, and must run consecutively), onto <i>+ new output</i> to make it
+      its own PDF, or onto <i>discard</i> to leave it out.</p>
     <p class="hint" id="parts-unused" hidden></p>
+    <p class="warn-line" id="parts-msg" hidden></p>
     <div id="part-cards" class="part-grid"></div>
+    <div id="part-zones" class="zones"></div>
   </section>
 
 
